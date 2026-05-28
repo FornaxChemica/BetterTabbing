@@ -13,7 +13,6 @@ struct SearchResultsListView: View {
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(.tertiary)
                     .textCase(.uppercase)
-                    .tracking(0.5)
 
                 Spacer()
 
@@ -125,10 +124,10 @@ struct SearchResultRowView: View {
         Group {
             if isSelected {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.accentColor.opacity(0.2))
+                    .fill(Color.white.opacity(0.08))
                     .overlay(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(Color.accentColor.opacity(0.3), lineWidth: 0.5)
+                            .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
                     )
             } else if isHovered {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)

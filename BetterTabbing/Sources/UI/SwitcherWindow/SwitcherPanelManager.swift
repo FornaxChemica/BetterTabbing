@@ -50,7 +50,7 @@ final class SwitcherPanelManager {
                 if let id = screenIdentifier(for: screen), addedIds.contains(id) {
                     let panel = createPanel(for: screen)
                     panels[id] = panel
-                    panel.showOnScreen(skipStateUpdate: true)
+                    panel.showOnScreen(mode: AppState.shared.presentationMode, skipStateUpdate: true)
                     print("[SwitcherPanelManager] Added panel for new screen: \(id)")
                 }
             }
@@ -90,7 +90,7 @@ final class SwitcherPanelManager {
 
     // MARK: - Show/Hide
 
-    func showWithCachedData() {
+    func showWithCachedData(mode: SwitcherPresentationMode = .workspace) {
         let startTime = CFAbsoluteTimeGetCurrent()
 
         ensurePanelsExist()
@@ -101,28 +101,28 @@ final class SwitcherPanelManager {
         AppState.shared.applications = finalApps
         AppState.shared.selectedAppIndex = finalApps.count > 1 ? 1 : 0
         AppState.shared.selectedWindowIndex = 0
-        AppState.shared.isVisible = true
+        AppState.shared.prepareForPresentation(mode)
 
         // Show all panels (without re-updating state)
         for panel in panels.values {
-            panel.showOnScreen(skipStateUpdate: true)
+            panel.showOnScreen(mode: mode, skipStateUpdate: true)
         }
 
         let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
         print("[SwitcherPanelManager] Shown \(panels.count) panels in \(Int(elapsed))ms with \(finalApps.count) apps")
     }
 
-    func show() {
+    func show(mode: SwitcherPresentationMode = .workspace) {
         ensurePanelsExist()
 
         let apps = WindowCache.shared.getApplicationsSync(forceRefresh: true)
         AppState.shared.applications = apps
         AppState.shared.selectedAppIndex = apps.count > 1 ? 1 : 0
         AppState.shared.selectedWindowIndex = 0
-        AppState.shared.isVisible = true
+        AppState.shared.prepareForPresentation(mode)
 
         for panel in panels.values {
-            panel.showOnScreen(skipStateUpdate: true)
+            panel.showOnScreen(mode: mode, skipStateUpdate: true)
         }
 
         print("[SwitcherPanelManager] Shown \(panels.count) panels")
@@ -155,12 +155,19 @@ final class SwitcherPanelManager {
     }
 
     func activateSearch() {
+        AppState.shared.presentationMode = .workspace
         AppState.shared.isSearchActive = true
-        // Make panel key after the resize/layout settles so focus isn't lost
-        let panel = panels.values.first
-        panel?.makeKey()
+
+        let visiblePanels = panels.values.filter(\.isVisible)
+        let keyPanel = visiblePanels.first ?? panels.values.first
+        for panel in visiblePanels {
+            panel.activateSearch()
+        }
+
+        // Make panel key after the resize/layout settles so focus isn't lost.
+        keyPanel?.makeKeyAndOrderFront(nil)
         DispatchQueue.main.async {
-            panel?.makeKey()
+            keyPanel?.makeKeyAndOrderFront(nil)
         }
     }
 

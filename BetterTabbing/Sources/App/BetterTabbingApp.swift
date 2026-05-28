@@ -18,7 +18,7 @@ struct MenuBarView: View {
     @EnvironmentObject var appState: AppState
 
     private var shortcutDisplay: String {
-        appState.preferences.useSystemShortcut ? "⌘ TAB" : "⌥ TAB"
+        "⌘ TAB previews · ⌥ TAB workspace"
     }
 
     var body: some View {
@@ -94,29 +94,13 @@ struct GeneralSettingsView: View {
                 Toggle("Launch at login", isOn: $appState.preferences.launchAtLogin)
             }
 
-            Section("Activation Shortcut") {
-                Picker("Shortcut", selection: $appState.preferences.useSystemShortcut) {
-                    Text("⌥ OPTION + TAB (Recommended)")
-                        .tag(false)
-                    Text("⌘ CMD + TAB (Replaces system)")
-                        .tag(true)
-                }
-                .pickerStyle(.radioGroup)
-                .onChange(of: appState.preferences.useSystemShortcut) { _, newValue in
-                    // Notify the event tap to update its modifier
-                    let modifier: ModifierKey = newValue ? .command : .option
-                    NotificationCenter.default.post(
-                        name: .activationModifierChanged,
-                        object: nil,
-                        userInfo: ["modifier": modifier]
-                    )
-                }
+            Section("Interaction Systems") {
+                KeyboardShortcutRow(title: "Native preview sync", shortcut: "⌘ TAB")
+                KeyboardShortcutRow(title: "Workspace mode", shortcut: "⌥ TAB")
 
-                if appState.preferences.useSystemShortcut {
-                    Text("This will intercept the system CMD+TAB shortcut. The native app switcher will be replaced.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Text("Command-Tab remains native. Option-Tab opens BetterTabbing workspace mode with focused navigation and search.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Quit Hold Duration") {
@@ -264,7 +248,7 @@ struct AboutView: View {
             Text("Version 1.0.0")
                 .foregroundStyle(.secondary)
 
-            Text("A better CMD+TAB experience for macOS")
+            Text("Native workspace preview augmentation for macOS")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 

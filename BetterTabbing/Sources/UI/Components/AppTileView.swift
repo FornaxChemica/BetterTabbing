@@ -14,22 +14,12 @@ struct AppTileView: View {
         VStack(spacing: 6) {
             ZStack {
                 // Selection/hover background
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(backgroundColor)
 
                 if isSelected && !isQuitHoldActive {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [
-                                    Color.accentColor.opacity(0.5),
-                                    Color.accentColor.opacity(0.2)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            ),
-                            lineWidth: 1
-                        )
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
                 }
 
                 // App icon
@@ -37,8 +27,8 @@ struct AppTileView: View {
                     .resizable()
                     .interpolation(.high)
                     .aspectRatio(contentMode: .fit)
-                    .frame(width: 48, height: 48)
-                    .shadow(color: .black.opacity(0.25), radius: 3, x: 0, y: 2)
+                    .frame(width: 46, height: 46)
+                    .shadow(color: .black.opacity(0.18), radius: 2, x: 0, y: 1)
                     .opacity(isQuitHoldActive ? 0.6 : 1.0)
 
                 // Quit hold progress ring overlay
@@ -51,7 +41,7 @@ struct AppTileView: View {
                     )
                 }
             }
-            .frame(width: 64, height: 64)
+            .frame(width: 58, height: 58)
 
             // App name with window count inline
             HStack(spacing: 4) {
@@ -69,10 +59,10 @@ struct AppTileView: View {
             }
             .frame(maxWidth: 76)
         }
-        .padding(6)
+        .padding(5)
         .contentShape(Rectangle())
-        .scaleEffect(isSelected ? 1.045 : (isHovered ? 1.02 : 1.0))
-        .opacity(isSelected ? 1 : 0.86)
+        .scaleEffect(isSelected ? 1.015 : (isHovered ? 1.008 : 1.0))
+        .opacity(isSelected ? 1 : 0.88)
         .animation(.spring(response: 0.22, dampingFraction: 0.86), value: isSelected)
         .animation(.easeOut(duration: 0.12), value: isHovered)
         .onHover { hovering in
@@ -85,9 +75,9 @@ struct AppTileView: View {
 
     private var backgroundColor: Color {
         if isSelected {
-            return Color.accentColor.opacity(0.22)
+            return Color.white.opacity(0.075)
         } else if isHovered {
-            return Color.white.opacity(0.10)
+            return Color.white.opacity(0.045)
         } else {
             return Color.clear
         }

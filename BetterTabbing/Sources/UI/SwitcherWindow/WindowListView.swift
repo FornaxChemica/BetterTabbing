@@ -6,46 +6,58 @@ struct WindowListView: View {
 
     let app: ApplicationModel
     let selectedWindowIndex: Int
+    var presentationMode: SwitcherPresentationMode = .workspace
     var onWindowHovered: ((Int) -> Void)? = nil
     var onWindowClicked: ((Int) -> Void)? = nil
+
+    private var surfaceItems: [WindowSurfaceItem] {
+        app.windows.enumerated().map { index, window in
+            WindowSurfaceItem(
+                id: window.compositorIdentity(ownerPID: app.pid),
+                index: index,
+                window: window
+            )
+        }
+    }
 
     var body: some View {
         GeometryReader { geometry in
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: app.hasMultipleWindows ? -14 : 0) {
-                        ForEach(Array(app.windows.enumerated()), id: \.element.id) { index, window in
-                            WindowPreviewCardView(
-                                window: window,
+                    HStack(alignment: .center, spacing: app.hasMultipleWindows ? 18 : 0) {
+                        ForEach(surfaceItems) { item in
+                            WindowPreviewSurfaceView(
+                                window: item.window,
                                 appName: app.name,
                                 appIcon: app.icon,
-                                isSelected: index == selectedWindowIndex,
-                                distanceFromSelection: abs(index - selectedWindowIndex),
+                                isSelected: item.index == selectedWindowIndex,
+                                distanceFromSelection: abs(item.index - selectedWindowIndex),
+                                presentationMode: presentationMode,
                                 onHover: { isHovering in
                                     if isHovering {
-                                        onWindowHovered?(index)
+                                        onWindowHovered?(item.index)
                                     }
                                 }
                             )
-                            .id(index)
                             .onTapGesture {
-                                onWindowClicked?(index)
+                                onWindowClicked?(item.index)
                             }
-                            .zIndex(index == selectedWindowIndex ? 10 : Double(5 - abs(index - selectedWindowIndex)))
+                            .zIndex(item.index == selectedWindowIndex ? 10 : Double(5 - abs(item.index - selectedWindowIndex)))
                         }
                     }
                     .frame(minWidth: geometry.size.width, alignment: app.hasMultipleWindows ? .leading : .center)
-                    .padding(.horizontal, app.hasMultipleWindows ? 22 : 0)
+                    .padding(.horizontal, app.hasMultipleWindows ? 18 : 0)
                     .padding(.vertical, 18)
                 }
                 .onChange(of: selectedWindowIndex) { oldValue, newValue in
-                    withAnimation(.smooth(duration: 0.16)) {
-                        proxy.scrollTo(newValue, anchor: .center)
+                    guard surfaceItems.indices.contains(newValue) else { return }
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        proxy.scrollTo(surfaceItems[newValue].id, anchor: .center)
                     }
                 }
             }
         }
-        .frame(height: 230)
+        .frame(height: presentationMode == .nativePreview ? 306 : 326)
         .onAppear {
             requestMissingPreviews()
         }
@@ -55,105 +67,104 @@ struct WindowListView: View {
         .onChange(of: app.windows.map(\.windowID)) { oldValue, newValue in
             requestMissingPreviews()
         }
+        .onChange(of: app.windows.map(\.title)) { oldValue, newValue in
+            requestMissingPreviews()
+        }
+        .onChange(of: app.windows.map(\.bounds)) { oldValue, newValue in
+            requestMissingPreviews()
+        }
+        .onChange(of: selectedWindowIndex) { oldValue, newValue in
+            requestMissingPreviews()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .windowPreviewDidLoad)) { notification in
-            guard let update = notification.object as? WindowPreviewUpdate,
-                  app.windows.contains(where: { $0.windowID == update.windowID }) else {
+            guard let update = notification.object as? WindowPreviewUpdate else {
                 return
             }
 
-            appState.setWindowPreview(update.image, for: update.windowID)
+            guard update.ownerPID == nil || update.ownerPID == app.pid else { return }
+            guard app.windows.contains(where: { $0.windowID == update.windowID }) else { return }
+
+            appState.setWindowPreview(update)
         }
     }
 
     private func requestMissingPreviews() {
-        WindowPreviewService.shared.requestPreviews(for: app.windows)
+        WindowPreviewService.shared.requestPreviews(
+            for: app.windows,
+            ownerPID: app.pid,
+            appName: app.name
+        )
     }
 }
 
-private struct WindowPreviewCardView: View {
+private struct WindowSurfaceItem: Identifiable, Equatable {
+    let id: String
+    let index: Int
+    let window: WindowModel
+}
+
+private struct WindowPreviewSurfaceView: View {
     let window: WindowModel
     let appName: String
     let appIcon: NSImage
     let isSelected: Bool
     let distanceFromSelection: Int
+    let presentationMode: SwitcherPresentationMode
     var onHover: ((Bool) -> Void)? = nil
 
     @State private var isHovered = false
 
-    private let previewSize = CGSize(width: 268, height: 154)
+    private var geometry: AdaptivePreviewGeometry {
+        AdaptivePreviewGeometry(window: window, presentationMode: presentationMode)
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        ZStack(alignment: .bottomLeading) {
             ZStack {
+                Color.black.opacity(0.10)
+
                 if let previewImage = window.previewImage {
                     Image(nsImage: previewImage)
                         .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: previewSize.width, height: previewSize.height)
+                        .interpolation(.high)
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: geometry.visualSize.width, height: geometry.visualSize.height)
                         .clipped()
-                        .overlay(previewScrim)
-                        .overlay(alignment: .top) {
-                            SubtleWindowChrome()
-                        }
                         .transition(.opacity.animation(.easeOut(duration: 0.16)))
                 } else {
-                    WindowPreviewPlaceholder(isMinimized: window.isMinimized)
-                        .frame(width: previewSize.width, height: previewSize.height)
+                    WindowPreviewPlaceholder(isMinimized: window.isMinimized, geometry: geometry)
+                        .frame(width: geometry.visualSize.width, height: geometry.visualSize.height)
                 }
             }
-            .frame(width: previewSize.width, height: previewSize.height)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .frame(width: geometry.visualSize.width, height: geometry.visualSize.height)
+            .clipShape(RoundedRectangle(cornerRadius: geometry.cornerRadius, style: .continuous))
             .overlay(previewBorder)
             .shadow(
-                color: .black.opacity(isSelected ? 0.30 : 0.13),
+                color: .black.opacity(isSelected ? 0.22 : 0.10),
                 radius: isSelected ? 22 : 10,
                 x: 0,
-                y: isSelected ? 14 : 5
+                y: isSelected ? 14 : 7
+            )
+            .shadow(
+                color: .white.opacity(isSelected ? 0.06 : 0.0),
+                radius: 18,
+                x: 0,
+                y: 0
             )
 
-            HStack(spacing: 8) {
-                Image(nsImage: appIcon)
-                    .resizable()
-                    .interpolation(.high)
-                    .frame(width: 18, height: 18)
-                    .cornerRadius(4)
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(window.title)
-                        .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
-                        .foregroundStyle(isSelected ? .primary : .secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-
-                    Text(appName)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-
-                if window.isMinimized {
-                    Text("min")
-                        .font(.system(size: 8, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 2)
-                        .background(
-                            Capsule()
-                                .fill(Color.white.opacity(0.08))
-                        )
-                }
-            }
-            .frame(width: previewSize.width, alignment: .leading)
+            metadataPill
+                .padding(.leading, geometry.metadataInset)
+                .padding(.bottom, geometry.metadataInset)
         }
-        .padding(.horizontal, 10)
+        .frame(width: geometry.visualSize.width, height: geometry.visualSize.height, alignment: .bottomLeading)
+        .padding(.horizontal, 8)
         .padding(.vertical, 8)
-        .scaleEffect(cardScale)
-        .offset(y: isSelected ? -5 : (isHovered ? -2 : 0))
+        .offset(y: isSelected ? -6 : (isHovered ? -2 : 8))
         .opacity(cardOpacity)
-        .animation(.spring(response: 0.24, dampingFraction: 0.88), value: isSelected)
+        .animation(.easeInOut(duration: 0.18), value: isSelected)
         .animation(.easeOut(duration: 0.12), value: isHovered)
         .animation(.easeOut(duration: 0.16), value: window.previewImage != nil)
-        .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: geometry.cornerRadius, style: .continuous))
         .onHover { hovering in
             isHovered = hovering
             if hovering {
@@ -162,87 +173,214 @@ private struct WindowPreviewCardView: View {
         }
     }
 
-    private var cardScale: CGFloat {
-        if isSelected { return 1.04 }
-        if distanceFromSelection == 1 { return isHovered ? 0.98 : 0.95 }
-        return isHovered ? 0.94 : 0.91
+    private var metadataPill: some View {
+        HStack(spacing: geometry.isMetadataCompact ? 6 : 8) {
+            if geometry.metadataWidth >= 92 {
+                Image(nsImage: appIcon)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: geometry.isMetadataCompact ? 16 : 18, height: geometry.isMetadataCompact ? 16 : 18)
+                    .cornerRadius(4)
+                    .layoutPriority(1)
+            }
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(window.title)
+                    .font(.system(size: geometry.isMetadataCompact ? 10 : 11, weight: isSelected ? .semibold : .medium))
+                    .foregroundStyle(isSelected ? .primary : .secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                if presentationMode == .workspace && !geometry.isMetadataCompact {
+                    Text(appName)
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+
+            if window.isMinimized && geometry.metadataWidth >= 178 {
+                Text("Minimized")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule()
+                            .fill(Color.white.opacity(0.08))
+                    )
+                    .layoutPriority(1)
+            }
+        }
+        .padding(.horizontal, geometry.isMetadataCompact ? 7 : 9)
+        .padding(.vertical, 7)
+        .frame(width: geometry.metadataWidth, alignment: .leading)
+        .background(
+            GlassBackground(
+                cornerRadius: 12,
+                tintOpacity: 0.045,
+                strokeOpacity: 0.06,
+                shadowOpacity: 0.05,
+                shadowRadius: 8,
+                shadowYOffset: 4
+            )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipped()
     }
 
     private var cardOpacity: Double {
         if isSelected { return 1.0 }
-        if isHovered { return 0.92 }
-        return distanceFromSelection == 1 ? 0.72 : 0.54
+        if isHovered { return 0.94 }
+        return distanceFromSelection == 1 ? 0.82 : 0.68
     }
 
     private var previewBorder: some View {
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .strokeBorder(isSelected ? Color.white.opacity(0.22) : Color.white.opacity(0.10), lineWidth: 0.75)
-    }
-
-    private var previewScrim: some View {
-        LinearGradient(
-            colors: [
-                Color.black.opacity(0.0),
-                Color.black.opacity(0.08)
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
+        RoundedRectangle(cornerRadius: geometry.cornerRadius, style: .continuous)
+            .strokeBorder(isSelected ? Color.white.opacity(0.24) : Color.white.opacity(0.075), lineWidth: isSelected ? 1.0 : 0.6)
     }
 }
 
-private struct SubtleWindowChrome: View {
-    var body: some View {
-        HStack(spacing: 5) {
-            Circle()
-                .fill(Color.red.opacity(0.28))
-                .frame(width: 7, height: 7)
-            Circle()
-                .fill(Color.yellow.opacity(0.25))
-                .frame(width: 7, height: 7)
-            Circle()
-                .fill(Color.green.opacity(0.25))
-                .frame(width: 7, height: 7)
+private struct AdaptivePreviewGeometry: Equatable {
+    let visualSize: CGSize
+    let cornerRadius: CGFloat
 
-            Spacer()
+    var metadataInset: CGFloat {
+        visualSize.width < 160 ? 8 : 10
+    }
+
+    var metadataWidth: CGFloat {
+        max(64, visualSize.width - metadataInset * 2)
+    }
+
+    var isMetadataCompact: Bool {
+        metadataWidth < 164
+    }
+
+    init(window: WindowModel, presentationMode: SwitcherPresentationMode) {
+        let constraints = Constraints(presentationMode: presentationMode)
+        let sourceSize = Self.sourceSize(for: window)
+        let aspect = Self.clampedAspectRatio(for: sourceSize)
+        let mass = Self.visualMassBand(for: sourceSize, hasReliableBounds: Self.hasReliableBounds(window.bounds))
+
+        var height = constraints.referenceHeight * mass
+        var width = height * aspect
+
+        if width > constraints.maximumWidth {
+            let scale = constraints.maximumWidth / width
+            width *= scale
+            height *= scale
         }
-        .frame(height: 18)
-        .padding(.horizontal, 9)
-        .background(
-            LinearGradient(
-                colors: [
-                    Color.black.opacity(0.16),
-                    Color.black.opacity(0.02)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        )
-        .allowsHitTesting(false)
+
+        if height > constraints.maximumHeight {
+            let scale = constraints.maximumHeight / height
+            width *= scale
+            height *= scale
+        }
+
+        if width < constraints.minimumWidth {
+            let scale = min(constraints.maximumVisibilityBoost, constraints.minimumWidth / max(width, 1))
+            width *= scale
+            height *= scale
+        }
+
+        if height < constraints.minimumHeight {
+            let scale = min(constraints.maximumVisibilityBoost, constraints.minimumHeight / max(height, 1))
+            width *= scale
+            height *= scale
+        }
+
+        width = min(max(width, constraints.absoluteMinimumWidth), constraints.maximumWidth)
+        height = min(max(height, constraints.absoluteMinimumHeight), constraints.maximumHeight)
+
+        let roundedSize = CGSize(width: width.rounded(), height: height.rounded())
+        self.visualSize = roundedSize
+        self.cornerRadius = min(17, max(11, min(roundedSize.width, roundedSize.height) * 0.055))
+    }
+
+    private static func sourceSize(for window: WindowModel) -> CGSize {
+        if hasReliableBounds(window.bounds) {
+            return window.bounds.size
+        }
+
+        if let image = window.previewImage, image.size.width > 1, image.size.height > 1 {
+            return image.size
+        }
+
+        return CGSize(width: 1100, height: 720)
+    }
+
+    private static func hasReliableBounds(_ bounds: CGRect) -> Bool {
+        bounds.width > 16 && bounds.height > 16
+    }
+
+    private static func clampedAspectRatio(for size: CGSize) -> CGFloat {
+        let rawAspect = size.width / max(size.height, 1)
+        return min(max(rawAspect, 0.58), 2.25)
+    }
+
+    private static func visualMassBand(for size: CGSize, hasReliableBounds: Bool) -> CGFloat {
+        guard hasReliableBounds else { return 0.98 }
+
+        let area = size.width * size.height
+        if area < 240_000 { return 0.76 }
+        if area < 700_000 { return 0.92 }
+        if area < 1_400_000 { return 1.04 }
+        return 1.14
+    }
+
+    private struct Constraints {
+        let referenceHeight: CGFloat
+        let minimumWidth: CGFloat
+        let minimumHeight: CGFloat
+        let absoluteMinimumWidth: CGFloat
+        let absoluteMinimumHeight: CGFloat
+        let maximumWidth: CGFloat
+        let maximumHeight: CGFloat
+        let maximumVisibilityBoost: CGFloat
+
+        init(presentationMode: SwitcherPresentationMode) {
+            switch presentationMode {
+            case .nativePreview:
+                referenceHeight = 218
+                minimumWidth = 126
+                minimumHeight = 122
+                absoluteMinimumWidth = 118
+                absoluteMinimumHeight = 112
+                maximumWidth = 410
+                maximumHeight = 246
+                maximumVisibilityBoost = 1.16
+            case .workspace:
+                referenceHeight = 228
+                minimumWidth = 132
+                minimumHeight = 128
+                absoluteMinimumWidth = 122
+                absoluteMinimumHeight = 118
+                maximumWidth = 440
+                maximumHeight = 260
+                maximumVisibilityBoost = 1.18
+            }
+        }
     }
 }
 
 private struct WindowPreviewPlaceholder: View {
     let isMinimized: Bool
+    let geometry: AdaptivePreviewGeometry
 
     var body: some View {
         ZStack {
-            LinearGradient(
-                colors: [
-                    Color.white.opacity(0.10),
-                    Color.white.opacity(0.035)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            Color.white.opacity(0.028)
 
-            VStack(spacing: 8) {
+            VStack(spacing: geometry.visualSize.width < 160 ? 5 : 8) {
                 Image(systemName: isMinimized ? "minus.rectangle" : "macwindow")
-                    .font(.system(size: 26, weight: .medium))
+                    .font(.system(size: geometry.visualSize.width < 160 ? 20 : 26, weight: .medium))
                     .foregroundStyle(.secondary)
 
                 Text(isMinimized ? "Minimized" : "Preview")
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.system(size: geometry.visualSize.width < 160 ? 9 : 10, weight: .medium))
                     .foregroundStyle(.tertiary)
             }
         }

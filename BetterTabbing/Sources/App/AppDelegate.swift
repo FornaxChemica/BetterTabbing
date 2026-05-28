@@ -8,15 +8,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panelManager: SwitcherPanelManager { SwitcherPanelManager.shared }
     private var preferencesWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
+    private var workspaceObserverTokens: [NSObjectProtocol] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Hide from Dock
         NSApp.setActivationPolicy(.accessory)
 
+        // Initialize event infrastructure early, but install the CGEventTap after
+        // a short launch delay to avoid TCC/LaunchServices races after signing changes.
+        setupEventTap()
+        setupWorkspaceRecoveryObservers()
+        eventTap?.logStartupDiagnostics(context: "applicationDidFinishLaunching")
+        eventTap?.scheduleInstall(reason: "delayed app launch", delay: 1.0)
+
         // Check/request permissions
         Task { @MainActor in
             let status = await PermissionManager.shared.checkStatus()
             print("[BetterTabbing] Permission status on launch:\n\(status.description)")
+            eventTap?.logStartupDiagnostics(context: "permission check before request")
 
             if !status.allGranted {
                 await PermissionManager.shared.requestPermissions()
@@ -24,16 +33,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             let updatedStatus = await PermissionManager.shared.checkStatus()
             print("[BetterTabbing] Permission status after request:\n\(updatedStatus.description)")
+            eventTap?.logStartupDiagnostics(context: "permission check after request")
 
             if updatedStatus.inputMonitoring {
-                eventTap?.installIfNeeded()
+                eventTap?.scheduleInstall(reason: "permissions confirmed", delay: 1.0)
             } else {
                 print("[BetterTabbing] Event tap not installed: Input Monitoring is not granted")
             }
         }
-
-        // Initialize event tap
-        setupEventTap()
 
         // Panel manager is a lazy singleton - will create panels on first show
 
@@ -45,11 +52,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        let workspaceNotificationCenter = NSWorkspace.shared.notificationCenter
+        for token in workspaceObserverTokens {
+            workspaceNotificationCenter.removeObserver(token)
+        }
+        workspaceObserverTokens.removeAll()
+
         eventTap?.disable()
         print("[BetterTabbing] App terminating")
     }
 
+    deinit {
+        print("[BetterTabbing] AppDelegate deinit")
+    }
+
     private func setupEventTap() {
+        print("[BetterTabbing] Creating KeyboardEventTap manager")
         eventTap = KeyboardEventTap()
 
         eventTap?.onShortcutTriggered
@@ -95,11 +113,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             .store(in: &cancellables)
 
-        // Apply saved preference for activation modifier
-        let savedPrefs = UserPreferences.load()
-        let modifier: ModifierKey = savedPrefs.useSystemShortcut ? .command : .option
-        eventTap?.setActivationModifier(modifier)
-        print("[BetterTabbing] Loaded activation modifier: \(modifier.symbol)")
+        NotificationCenter.default.publisher(for: .activateSwitcherSearch)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.panelManager.activateSearch()
+                    self?.eventTap?.setSearchModeActive(true)
+                }
+            }
+            .store(in: &cancellables)
+
+        // Option+Tab owns BetterTabbing workspace mode. Cmd+Tab remains native and
+        // is observed passively by the event tap.
+        eventTap?.setActivationModifier(.option)
+        print("[BetterTabbing] Loaded workspace activation modifier: \(ModifierKey.option.symbol)")
 
         // Listen for open preferences notification
         NotificationCenter.default.publisher(for: .openPreferences)
@@ -113,6 +140,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .store(in: &cancellables)
 
         print("[BetterTabbing] Event tap configured")
+        eventTap?.logStartupDiagnostics(context: "setupEventTap complete")
+    }
+
+    private func setupWorkspaceRecoveryObservers() {
+        let workspaceNotificationCenter = NSWorkspace.shared.notificationCenter
+
+        let sessionToken = workspaceNotificationCenter.addObserver(
+            forName: NSWorkspace.sessionDidBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            print("[BetterTabbing] NSWorkspace session became active; verifying event tap")
+            Task { @MainActor [weak self] in
+                self?.eventTap?.verifyOrRebuild(reason: "workspace session became active")
+            }
+        }
+
+        let wakeToken = workspaceNotificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            print("[BetterTabbing] NSWorkspace did wake; verifying event tap")
+            Task { @MainActor [weak self] in
+                self?.eventTap?.verifyOrRebuild(reason: "workspace did wake")
+            }
+        }
+
+        workspaceObserverTokens = [sessionToken, wakeToken]
+        print("[BetterTabbing] Workspace recovery observers installed")
     }
 
     private func showPreferencesWindow() {
@@ -153,7 +210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Pre-fetch window data on background thread (non-blocking)
             WindowCache.shared.prefetchAsync()
         case .showSwitcher:
-            panelManager.showWithCachedData()
+            panelManager.showWithCachedData(mode: .workspace)
             eventTap?.setSwitcherVisible(true)
         case .cycleNext:
             panelManager.selectNext()
@@ -179,11 +236,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Navigate down in search results (same as selectNext)
             panelManager.selectNext()
         case .navigateRowUp:
-            // Move to row above in the app grid
-            AppState.shared.selectAppInRowAbove()
+            AppState.shared.selectPreviousWindow()
         case .navigateRowDown:
-            // Move to row below in the app grid
-            AppState.shared.selectAppInRowBelow()
+            AppState.shared.selectNextWindow()
         case .quickSwitch:
             // Quick switch to previous app without showing UI
             panelManager.hide()
@@ -205,6 +260,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             AppState.shared.cancelEHold(triggeredAI: false)
         case .toggleProcessGrouping:
             AppState.shared.isProcessGroupingEnabled.toggle()
+        case .nativeSwitchStarted:
+            WindowCache.shared.prefetchAsync()
+            panelManager.showWithCachedData(mode: .nativePreview)
+        case .nativeSwitchCycleNext:
+            panelManager.selectNext()
+        case .nativeSwitchCyclePrevious:
+            panelManager.selectPrevious()
+        case .nativeSwitchEnded:
+            panelManager.hide()
+            eventTap?.setSwitcherVisible(false)
         }
     }
 

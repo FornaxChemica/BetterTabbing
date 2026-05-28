@@ -122,8 +122,10 @@ final class WindowEnumerator {
                 if idResult == .success && windowID != 0 {
                     finalWindowID = windowID
                 } else {
-                    // Generate a pseudo-ID from PID and window index
+                    // Generate a pseudo-ID from PID and window index. Preview capture will
+                    // fall back to ScreenCaptureKit PID/title/geometry matching for these.
                     finalWindowID = CGWindowID(pid) << 16 | CGWindowID(windows.count)
+                    print("[WindowEnumerator][preview] missing AX CGWindowID for \(name) title=\(title ?? "untitled") axResult=\(idResult.rawValue); using pseudoID=\(finalWindowID)")
                 }
 
                 windows.append(WindowInfo(
@@ -164,7 +166,12 @@ final class WindowEnumerator {
                 windows: windows.map { info in
                     WindowModel(
                         from: info,
-                        previewImage: WindowPreviewService.shared.cachedPreview(for: info.windowID)
+                        previewImage: WindowPreviewService.shared.cachedPreview(
+                            for: info.windowID,
+                            ownerPID: info.ownerPID,
+                            title: info.windowName ?? info.ownerName,
+                            bounds: info.bounds
+                        )
                     )
                 },
                 isActive: app.isActive

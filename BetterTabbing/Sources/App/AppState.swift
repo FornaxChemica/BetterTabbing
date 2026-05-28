@@ -2,6 +2,11 @@ import SwiftUI
 import AppKit
 import Combine
 
+enum SwitcherPresentationMode: Equatable {
+    case nativePreview
+    case workspace
+}
+
 @MainActor
 final class AppState: ObservableObject {
     static let shared = AppState()
@@ -9,6 +14,7 @@ final class AppState: ObservableObject {
     // MARK: - Switcher State
 
     @Published var isVisible = false
+    @Published var presentationMode: SwitcherPresentationMode = .workspace
     @Published var applications: [ApplicationModel] = []
     @Published var selectedAppIndex = 0
     @Published var selectedWindowIndex = 0
@@ -106,26 +112,66 @@ final class AppState: ObservableObject {
         return FuzzyMatcher.filter(applications, query: searchQuery)
     }
 
-    func setWindowPreview(_ image: NSImage, for windowID: CGWindowID) {
+    func setWindowPreview(_ update: WindowPreviewUpdate) {
         var updatedApplications = applications
         var didUpdate = false
+        var didFindWindow = false
 
         for appIndex in updatedApplications.indices {
-            guard let windowIndex = updatedApplications[appIndex].windows.firstIndex(where: { $0.windowID == windowID }) else {
+            if let ownerPID = update.ownerPID, updatedApplications[appIndex].pid != ownerPID {
                 continue
             }
 
-            guard updatedApplications[appIndex].windows[windowIndex].previewImage == nil else {
+            guard let windowIndex = updatedApplications[appIndex].windows.firstIndex(where: { window in
+                previewUpdate(update, matches: window)
+            }) else {
                 continue
             }
 
-            updatedApplications[appIndex].windows[windowIndex].previewImage = image
+            didFindWindow = true
+            updatedApplications[appIndex].windows[windowIndex].previewImage = update.image
             didUpdate = true
         }
 
         if didUpdate {
             applications = updatedApplications
+            print("[AppState][preview] applied preview for windowID=\(update.windowID) pid=\(update.ownerPID.map(String.init) ?? "unknown")")
+        } else if !didFindWindow {
+            print("[AppState][preview] dropped preview; no matching windowID=\(update.windowID) pid=\(update.ownerPID.map(String.init) ?? "unknown")")
         }
+    }
+
+    private func previewUpdate(_ update: WindowPreviewUpdate, matches window: WindowModel) -> Bool {
+        guard window.windowID == update.windowID else { return false }
+
+        let updateTitle = normalizedPreviewTitle(update.title)
+        let windowTitle = normalizedPreviewTitle(window.title)
+        guard !updateTitle.isEmpty, updateTitle == windowTitle else {
+            return false
+        }
+
+        if hasReliablePreviewBounds(update.bounds), hasReliablePreviewBounds(window.bounds) {
+            return previewBounds(update.bounds, match: window.bounds)
+        }
+
+        return true
+    }
+
+    private func normalizedPreviewTitle(_ title: String) -> String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private func previewBounds(_ lhs: CGRect, match rhs: CGRect) -> Bool {
+        guard hasReliablePreviewBounds(lhs), hasReliablePreviewBounds(rhs) else { return false }
+
+        return abs(lhs.origin.x - rhs.origin.x) <= 2
+            && abs(lhs.origin.y - rhs.origin.y) <= 2
+            && abs(lhs.width - rhs.width) <= 2
+            && abs(lhs.height - rhs.height) <= 2
+    }
+
+    private func hasReliablePreviewBounds(_ bounds: CGRect) -> Bool {
+        bounds.width > 16 && bounds.height > 16
     }
 
     // MARK: - Navigation Methods
@@ -164,6 +210,22 @@ final class AppState: ObservableObject {
     /// Check if mouse input should be processed (mouse has moved since panel appeared)
     var shouldProcessMouseInput: Bool {
         return hasMouseMoved && !isKeyboardNavigating
+    }
+
+    func prepareForPresentation(_ mode: SwitcherPresentationMode) {
+        presentationMode = mode
+        isVisible = true
+        hasMouseMoved = false
+        isKeyboardNavigating = false
+        lastMousePosition = nil
+
+        if mode == .nativePreview {
+            isSearchActive = false
+            searchQuery = ""
+            selectedSearchIndex = 0
+            isResourceMonitorActive = false
+            stopResourcePolling()
+        }
     }
 
     func selectNextApp() {
@@ -541,6 +603,7 @@ final class AppState: ObservableObject {
         cancelQuitHold()
         stopResourcePolling()
         isVisible = false
+        presentationMode = .workspace
         selectedAppIndex = 0
         selectedWindowIndex = 0
         selectedSearchIndex = 0

@@ -33,12 +33,14 @@ struct SearchBarView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.white.opacity(0.08))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)
-                )
+            GlassBackground(
+                cornerRadius: 14,
+                tintOpacity: 0.04,
+                strokeOpacity: 0.08,
+                shadowOpacity: 0.08,
+                shadowRadius: 12,
+                shadowYOffset: 6
+            )
         )
     }
 }

@@ -52,6 +52,22 @@ struct WindowModel: Identifiable, Hashable {
         isOnScreen && !isMinimized && bounds.width > 1 && bounds.height > 1
     }
 
+    func compositorIdentity(ownerPID: pid_t) -> String {
+        let titleKey = title
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let boundsKey = [
+            Int(bounds.origin.x.rounded()),
+            Int(bounds.origin.y.rounded()),
+            Int(bounds.width.rounded()),
+            Int(bounds.height.rounded())
+        ]
+            .map(String.init)
+            .joined(separator: "x")
+
+        return "\(ownerPID):\(windowID):\(titleKey):\(boundsKey)"
+    }
+
     func hash(into hasher: inout Hasher) {
         hasher.combine(windowID)
     }

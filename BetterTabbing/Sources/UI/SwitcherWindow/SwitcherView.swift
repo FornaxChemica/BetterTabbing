@@ -2,7 +2,6 @@ import SwiftUI
 
 struct SwitcherView: View {
     @EnvironmentObject var appState: AppState
-    @Namespace private var selectionNamespace
     @FocusState private var isSearchFocused: Bool
 
     /// Whether to show search results list (when searching with query)
@@ -10,48 +9,105 @@ struct SwitcherView: View {
         appState.isSearchActive && !appState.searchQuery.isEmpty
     }
 
-    /// Whether selected app has a real window preview strip to show
-    private var showWindowList: Bool {
-        guard let selectedApp = appState.selectedApp else { return false }
-        return selectedApp.windows.contains { $0.canCapturePreview || $0.isMinimized } && !showSearchResults
+    var body: some View {
+        Group {
+            if appState.presentationMode == .nativePreview {
+                nativePreviewOverlay
+            } else {
+                workspaceOverlay
+            }
+        }
+        .frame(width: calculateWidth())
+        .fixedSize(horizontal: false, vertical: true)
+        .animation(.easeInOut(duration: 0.18), value: appState.presentationMode)
+        .animation(.easeInOut(duration: 0.18), value: appState.selectedAppIndex)
+        .animation(.easeInOut(duration: 0.16), value: appState.selectedWindowIndex)
+        .onChange(of: appState.isSearchActive) { oldValue, isActive in
+            if isActive {
+                appState.selectedSearchIndex = 0
+                // Delay focus to next run loop so the SearchBarView is fully
+                // inserted into the hierarchy and the panel resize has started
+                DispatchQueue.main.async {
+                    isSearchFocused = true
+                }
+            }
+        }
+        .onChange(of: appState.searchQuery) { oldValue, newValue in
+            appState.selectedSearchIndex = 0
+        }
     }
 
-    var body: some View {
-        VStack(spacing: 0) {
-            // Search bar - slides in from top when active
-            if appState.isSearchActive {
-                SearchBarView(
-                    searchQuery: $appState.searchQuery,
-                    isFocused: $isSearchFocused,
-                    onSubmit: {
-                        confirmSelection()
-                    }
+    private var nativePreviewOverlay: some View {
+        VStack(spacing: 12) {
+            if let selectedApp = appState.selectedApp {
+                WindowListView(
+                    app: selectedApp,
+                    selectedWindowIndex: appState.selectedWindowIndex,
+                    presentationMode: .nativePreview,
+                    onWindowHovered: { _ in },
+                    onWindowClicked: { _ in }
                 )
-                .padding(.horizontal, 16)
-                .padding(.top, 14)
-                .padding(.bottom, 10)
-                .transition(.opacity.animation(.easeOut(duration: 0.15)))
+
+                NativeContextStrip(app: selectedApp)
             }
+        }
+        .padding(.vertical, 10)
+    }
+
+    private var workspaceOverlay: some View {
+        VStack(spacing: 12) {
+            workspaceSearchSurface
 
             if showSearchResults {
-                // Search results list
-                SearchResultsListView(
-                    results: appState.searchResults,
-                    selectedIndex: appState.selectedSearchIndex,
-                    onResultClicked: { index in
-                        appState.selectedSearchIndex = index
-                        if let result = appState.selectedSearchResult,
-                           let windowIndex = result.targetWindowIndex {
-                            appState.selectedWindowIndex = windowIndex
+                HStack(alignment: .top, spacing: 16) {
+                    SearchResultsListView(
+                        results: appState.searchResults,
+                        selectedIndex: appState.selectedSearchIndex,
+                        onResultClicked: { index in
+                            appState.selectedSearchIndex = index
+                            if let result = appState.selectedSearchResult,
+                               let windowIndex = result.targetWindowIndex {
+                                appState.selectedWindowIndex = windowIndex
+                            }
+                            confirmSelection()
                         }
-                        confirmSelection()
-                    }
-                )
-                .padding(.horizontal, 16)
-                .padding(.bottom, 14)
+                    )
+                    .padding(14)
+                    .frame(width: 330)
+                    .background(
+                        GlassBackground(
+                            cornerRadius: 18,
+                            tintOpacity: 0.045,
+                            strokeOpacity: 0.08,
+                            shadowOpacity: 0.08,
+                            shadowRadius: 14,
+                            shadowYOffset: 8
+                        )
+                    )
 
+                    if let selectedApp = appState.selectedApp {
+                        VStack(spacing: 10) {
+                            WindowListView(
+                                app: selectedApp,
+                                selectedWindowIndex: appState.selectedWindowIndex,
+                                presentationMode: .workspace,
+                                onWindowHovered: { index in
+                                    guard appState.shouldProcessMouseInput else { return }
+                                    appState.selectedWindowIndex = index
+                                },
+                                onWindowClicked: { index in
+                                    appState.selectedWindowIndex = index
+                                    confirmSelection()
+                                }
+                            )
+
+                            WorkspaceContextStrip(app: selectedApp)
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                }
+                .frame(maxWidth: calculateWidth())
             } else if appState.isResourceMonitorActive {
-                // Resource monitor view — toggled with E key, live-updating
                 ResourceMonitorView(
                     entries: appState.resourceEntries,
                     systemMemory: appState.systemMemory,
@@ -68,19 +124,24 @@ struct SwitcherView: View {
                     isGroupingEnabled: appState.isProcessGroupingEnabled,
                     onRefreshInsight: { appState.refreshAIInsight() }
                 )
-                .padding(.horizontal, 16)
-                .padding(.vertical, 14)
-
-                // Keyboard hints for monitor mode
-                monitorHintsView
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 10)
-
+                .padding(16)
+                .background(
+                    GlassBackground(
+                        cornerRadius: 20,
+                        tintOpacity: 0.055,
+                        strokeOpacity: 0.09,
+                        shadowOpacity: 0.10,
+                        shadowRadius: 18,
+                        shadowYOffset: 10
+                    )
+                )
+                .frame(maxWidth: 620)
             } else {
-                if showWindowList, let selectedApp = appState.selectedApp {
+                if let selectedApp = appState.selectedApp {
                     WindowListView(
                         app: selectedApp,
                         selectedWindowIndex: appState.selectedWindowIndex,
+                        presentationMode: .workspace,
                         onWindowHovered: { index in
                             guard appState.shouldProcessMouseInput else { return }
                             appState.selectedWindowIndex = index
@@ -95,80 +156,134 @@ struct SwitcherView: View {
                             appState.markMouseNavigation(at: NSEvent.mouseLocation)
                         }
                     }
-                    .padding(.horizontal, 18)
-                    .padding(.top, 18)
-                    .padding(.bottom, 8)
-                    .transition(.opacity.combined(with: .scale(scale: 0.985)).animation(.easeOut(duration: 0.16)))
+
+                    WorkspaceContextStrip(app: selectedApp)
                 }
 
-                // App grid becomes a quiet dock-like selector when previews are present.
-                AppGridView(
-                    applications: appState.filteredApplications,
-                    selectedIndex: appState.selectedAppIndex,
-                    namespace: selectionNamespace,
-                    quitTargetAppIndex: appState.quitTargetAppIndex,
-                    quitHoldProgress: appState.quitHoldProgress,
-                    isQuitHoldActive: appState.isQuitHoldActive,
-                    onAppClicked: { index in
+                appRail
+            }
+
+            if !appState.isResourceMonitorActive {
+                workspaceCommandStrip
+            }
+        }
+        .padding(.vertical, 10)
+    }
+
+    @ViewBuilder
+    private var workspaceSearchSurface: some View {
+        if appState.isSearchActive {
+            SearchBarView(
+                searchQuery: $appState.searchQuery,
+                isFocused: $isSearchFocused,
+                onSubmit: {
+                    confirmSelection()
+                }
+            )
+            .frame(width: min(calculateWidth() - 220, 560))
+            .transition(.move(edge: .top).combined(with: .opacity))
+        } else {
+            Button {
+                NotificationCenter.default.post(name: .activateSwitcherSearch, object: nil)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+
+                    Text("Search apps and windows")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+
+                    Spacer(minLength: 0)
+
+                    KeyCap(symbol: "return")
+                        .opacity(0.72)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .frame(width: min(calculateWidth() - 260, 440))
+                .background(
+                    GlassBackground(
+                        cornerRadius: 14,
+                        tintOpacity: 0.03,
+                        strokeOpacity: 0.055,
+                        shadowOpacity: 0.05,
+                        shadowRadius: 9,
+                        shadowYOffset: 4
+                    )
+                )
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var workspaceCommandStrip: some View {
+        HStack(spacing: 14) {
+            KeyHint(keys: ["tab"], label: showSearchResults ? "Result" : "App")
+            KeyHint(keys: ["`"], label: "Window")
+            KeyHint(keys: ["return"], label: appState.isSearchActive ? "Open" : "Search")
+            KeyHint(keys: ["E"], label: "Monitor")
+            KeyHint(keys: ["Q"], label: "Hold quit")
+            KeyHint(keys: ["esc"], label: "Close")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(
+            GlassBackground(
+                cornerRadius: 13,
+                tintOpacity: 0.026,
+                strokeOpacity: 0.045,
+                shadowOpacity: 0.035,
+                shadowRadius: 8,
+                shadowYOffset: 4
+            )
+        )
+        .opacity(0.84)
+    }
+
+    private var appRail: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 9) {
+                ForEach(Array(appState.filteredApplications.enumerated()), id: \.element.id) { index, app in
+                    let isSelected = index == appState.selectedAppIndex
+
+                    AppRailToken(
+                        app: app,
+                        isSelected: isSelected,
+                        isQuitHoldActive: appState.isQuitHoldActive && index == appState.quitTargetAppIndex,
+                        quitHoldProgress: isSelected ? appState.quitHoldProgress : 0
+                    )
+                    .onTapGesture {
                         appState.selectedAppIndex = index
                         appState.selectedWindowIndex = 0
                         confirmSelection()
-                    },
-                    onAppHovered: { index in
-                        guard appState.shouldProcessMouseInput else { return }
+                    }
+                    .onHover { hovering in
+                        guard hovering, appState.shouldProcessMouseInput else { return }
                         appState.selectedAppIndex = index
                         appState.selectedWindowIndex = 0
                     }
-                )
-                .onContinuousHover { phase in
-                    if case .active = phase {
-                        // Use screen mouse position for tracking actual movement
-                        appState.markMouseNavigation(at: NSEvent.mouseLocation)
-                    }
                 }
-                .padding(.horizontal, showWindowList ? 20 : 16)
-                .padding(.top, showWindowList ? 6 : 14)
-                .padding(.bottom, showWindowList ? 8 : 14)
-                .opacity(showWindowList ? 0.86 : 1.0)
-                .background {
-                    if showWindowList {
-                        RoundedRectangle(cornerRadius: 20, style: .continuous)
-                            .fill(Color.white.opacity(0.035))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 4)
-                    }
-                }
-
-                // Keyboard hints - minimal and sleek
-                keyboardHintsView
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 10)
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
         }
-        .frame(width: calculateWidth())
-        .fixedSize(horizontal: false, vertical: true)  // Let height be determined by content
-        .background(GlassBackground(cornerRadius: 28))
-        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.75)
+        .frame(maxWidth: min(calculateWidth() - 120, 760))
+        .background(
+            GlassBackground(
+                cornerRadius: 18,
+                tintOpacity: 0.035,
+                strokeOpacity: 0.06,
+                shadowOpacity: 0.06,
+                shadowRadius: 12,
+                shadowYOffset: 6
+            )
         )
-        .shadow(color: .black.opacity(0.22), radius: 30, x: 0, y: 18)
-        .shadow(color: .black.opacity(0.10), radius: 8, x: 0, y: 3)
-        .animation(.spring(response: 0.24, dampingFraction: 0.88), value: appState.selectedAppIndex)
-        .animation(.spring(response: 0.24, dampingFraction: 0.9), value: appState.selectedWindowIndex)
-        .onChange(of: appState.isSearchActive) { oldValue, isActive in
-            if isActive {
-                appState.selectedSearchIndex = 0
-                // Delay focus to next run loop so the SearchBarView is fully
-                // inserted into the hierarchy and the panel resize has started
-                DispatchQueue.main.async {
-                    isSearchFocused = true
-                }
+        .onContinuousHover { phase in
+            if case .active = phase {
+                appState.markMouseNavigation(at: NSEvent.mouseLocation)
             }
-        }
-        .onChange(of: appState.searchQuery) { oldValue, newValue in
-            appState.selectedSearchIndex = 0
         }
     }
 
@@ -176,90 +291,158 @@ struct SwitcherView: View {
     private func calculateWidth() -> CGFloat {
         let appCount = appState.filteredApplications.count
 
+        if appState.presentationMode == .nativePreview {
+            return appState.selectedApp?.hasMultipleWindows == true ? 980 : 620
+        }
+
         if showSearchResults {
-            return 480  // Fixed width for search results
+            return 1040
         }
 
         if appState.isResourceMonitorActive {
-            return 540  // Wider to fit gauges + live graph
+            return 680
         }
 
         if appState.isSearchActive && appState.searchQuery.isEmpty {
             // Search mode but no query yet - use app grid width
-            let idealItemsPerRow = min(appCount, 8)
-            let baseWidth = CGFloat(idealItemsPerRow) * 88 + 32
-            return min(max(baseWidth, 400), 720)
+            let idealItemsPerRow = min(appCount, 10)
+            let baseWidth = CGFloat(idealItemsPerRow) * 58 + 120
+            return min(max(baseWidth, 780), 1040)
         }
 
         // Calculate based on app count
-        let idealItemsPerRow = min(appCount, 8)
-        let baseWidth = CGFloat(idealItemsPerRow) * 88 + 32
+        let idealItemsPerRow = min(appCount, 10)
+        let baseWidth = CGFloat(idealItemsPerRow) * 58 + 120
 
-        return min(max(baseWidth, 400), 720)
-    }
-
-    /// Calculate height based on content
-    private func calculateHeight() -> CGFloat {
-        let appCount = appState.filteredApplications.count
-
-        // Search bar height when active
-        let searchBarHeight: CGFloat = appState.isSearchActive ? 54 : 0
-
-        if showSearchResults {
-            // Search results: header + results + bottom padding
-            let resultCount = min(appState.searchResults.count, 10)
-            let resultsHeight = resultCount == 0 ? 80 : CGFloat(resultCount) * 44 + 24
-            return searchBarHeight + resultsHeight + 14
-        }
-
-        // App grid calculation
-        // Each tile: 64px icon + 6px spacing + ~14px text + 12px padding = ~96px
-        // Grid spacing: 6px between rows
-        let itemsPerRow = calculateItemsPerRow()
-        let rows = appCount > 0 ? ceil(CGFloat(appCount) / CGFloat(itemsPerRow)) : 1
-        let tileHeight: CGFloat = 96
-        let gridSpacing: CGFloat = 6
-        let gridHeight = rows * tileHeight + (rows - 1) * gridSpacing + 28  // +28 for vertical padding on grid
-
-        // Keyboard hints
-        let hintsHeight: CGFloat = 30
-
-        // Window preview stage if showing
-        let windowListHeight: CGFloat = showWindowList ? 252 : 0
-
-        return searchBarHeight + gridHeight + hintsHeight + windowListHeight
-    }
-
-    private func calculateItemsPerRow() -> Int {
-        let width = calculateWidth() - 32  // Subtract padding
-        let itemWidth: CGFloat = 88
-        return max(1, Int(width / itemWidth))
-    }
-
-    private var keyboardHintsView: some View {
-        HStack(spacing: 16) {
-            KeyHint(keys: ["tab"], label: "Next")
-            KeyHint(keys: ["`"], label: "Windows")
-            KeyHint(keys: ["Q"], label: "Quit")
-            KeyHint(keys: ["E"], label: "Monitor")
-            KeyHint(keys: ["return"], label: "Search")
-            KeyHint(keys: ["esc"], label: "Close")
-        }
-        .opacity(0.8)
-    }
-
-    private var monitorHintsView: some View {
-        HStack(spacing: 16) {
-            KeyHint(keys: ["E"], label: "Apps")
-            KeyHint(keys: ["E"], label: "Hold: AI")
-            KeyHint(keys: ["F"], label: appState.isProcessGroupingEnabled ? "Ungroup" : "Group")
-            KeyHint(keys: ["esc"], label: "Close")
-        }
-        .opacity(0.8)
+        return min(max(baseWidth, 780), 1040)
     }
 
     private func confirmSelection() {
         NotificationCenter.default.post(name: .confirmSwitcherSelection, object: nil)
+    }
+}
+
+private struct NativeContextStrip: View {
+    let app: ApplicationModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(nsImage: app.icon)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 22, height: 22)
+                .cornerRadius(5)
+
+            Text(app.name)
+                .font(.system(size: 13, weight: .medium))
+                .lineLimit(1)
+
+            if app.windowCount > 1 {
+                Text("\(app.windowCount) windows")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(
+            GlassBackground(
+                cornerRadius: 14,
+                tintOpacity: 0.035,
+                strokeOpacity: 0.055,
+                shadowOpacity: 0.06,
+                shadowRadius: 10,
+                shadowYOffset: 5
+            )
+        )
+    }
+}
+
+private struct WorkspaceContextStrip: View {
+    let app: ApplicationModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(nsImage: app.icon)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 20, height: 20)
+                .cornerRadius(5)
+
+            Text(app.name)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+
+            if let title = app.primaryWindowTitle {
+                Text(title)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .frame(maxWidth: 460)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(
+            GlassBackground(
+                cornerRadius: 14,
+                tintOpacity: 0.03,
+                strokeOpacity: 0.05,
+                shadowOpacity: 0.05,
+                shadowRadius: 9,
+                shadowYOffset: 4
+            )
+        )
+    }
+}
+
+private struct AppRailToken: View {
+    let app: ApplicationModel
+    let isSelected: Bool
+    let isQuitHoldActive: Bool
+    let quitHoldProgress: CGFloat
+
+    var body: some View {
+        HStack(spacing: isSelected ? 8 : 0) {
+            ZStack {
+                Image(nsImage: app.icon)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 30, height: 30)
+                    .shadow(color: .black.opacity(0.16), radius: 2, x: 0, y: 1)
+                    .opacity(isQuitHoldActive ? 0.55 : 1)
+
+                if isQuitHoldActive {
+                    CircularProgressRing(
+                        progress: quitHoldProgress,
+                        color: .red,
+                        lineWidth: 2,
+                        size: 40
+                    )
+                }
+            }
+
+            if isSelected {
+                Text(app.name)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+            }
+        }
+        .padding(.horizontal, isSelected ? 10 : 7)
+        .padding(.vertical, 7)
+        .background(
+            Capsule()
+                .fill(Color.white.opacity(isSelected ? 0.09 : 0.015))
+                .overlay(
+                    Capsule()
+                        .strokeBorder(Color.white.opacity(isSelected ? 0.10 : 0.03), lineWidth: 0.5)
+                )
+        )
+        .contentShape(Capsule())
+        .animation(.easeInOut(duration: 0.16), value: isSelected)
     }
 }
 
@@ -354,4 +537,5 @@ extension Notification.Name {
     static let switcherConfirmedByMouseClick = Notification.Name("switcherConfirmedByMouseClick")
     static let activationModifierChanged = Notification.Name("activationModifierChanged")
     static let openPreferences = Notification.Name("openPreferences")
+    static let activateSwitcherSearch = Notification.Name("activateSwitcherSearch")
 }
