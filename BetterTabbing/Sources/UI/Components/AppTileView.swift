@@ -71,6 +71,10 @@ struct AppTileView: View {
         }
         .padding(6)
         .contentShape(Rectangle())
+        .scaleEffect(isSelected ? 1.045 : (isHovered ? 1.02 : 1.0))
+        .opacity(isSelected ? 1 : 0.86)
+        .animation(.spring(response: 0.22, dampingFraction: 0.86), value: isSelected)
+        .animation(.easeOut(duration: 0.12), value: isHovered)
         .onHover { hovering in
             isHovered = hovering
             if hovering {
@@ -81,9 +85,9 @@ struct AppTileView: View {
 
     private var backgroundColor: Color {
         if isSelected {
-            return Color.accentColor.opacity(0.2)
+            return Color.accentColor.opacity(0.22)
         } else if isHovered {
-            return Color.white.opacity(0.08)
+            return Color.white.opacity(0.10)
         } else {
             return Color.clear
         }

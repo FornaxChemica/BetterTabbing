@@ -16,8 +16,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Check/request permissions
         Task { @MainActor in
             let status = await PermissionManager.shared.checkStatus()
+            print("[BetterTabbing] Permission status on launch:\n\(status.description)")
+
             if !status.allGranted {
                 await PermissionManager.shared.requestPermissions()
+            }
+
+            let updatedStatus = await PermissionManager.shared.checkStatus()
+            print("[BetterTabbing] Permission status after request:\n\(updatedStatus.description)")
+
+            if updatedStatus.inputMonitoring {
+                eventTap?.installIfNeeded()
+            } else {
+                print("[BetterTabbing] Event tap not installed: Input Monitoring is not granted")
             }
         }
 

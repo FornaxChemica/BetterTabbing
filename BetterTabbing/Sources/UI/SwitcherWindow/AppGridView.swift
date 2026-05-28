@@ -11,14 +11,14 @@ struct AppGridView: View {
     var onAppHovered: ((Int) -> Void)?
 
     private let columns = [
-        GridItem(.adaptive(minimum: 76, maximum: 90), spacing: 6)
+        GridItem(.adaptive(minimum: 80, maximum: 94), spacing: 10)
     ]
 
     var body: some View {
         if applications.isEmpty {
             emptyStateView
         } else {
-            LazyVGrid(columns: columns, spacing: 6) {
+            LazyVGrid(columns: columns, spacing: 10) {
                 ForEach(Array(applications.enumerated()), id: \.element.id) { index, app in
                     let isQuitTarget = isQuitHoldActive && index == quitTargetAppIndex
                     AppTileView(

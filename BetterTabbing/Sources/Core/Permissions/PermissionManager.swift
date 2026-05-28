@@ -5,6 +5,8 @@ import ApplicationServices
 actor PermissionManager {
     static let shared = PermissionManager()
 
+    private var hasRequestedScreenRecordingThisLaunch = false
+
     enum Permission: String, CaseIterable {
         case inputMonitoring = "Input Monitoring"
         case accessibility = "Accessibility"
@@ -49,7 +51,7 @@ actor PermissionManager {
         }
 
         if !status.screenRecording {
-            requestScreenRecording()
+            print("[PermissionManager] Screen Recording will be requested when window previews are first used")
         }
     }
 
@@ -81,35 +83,25 @@ actor PermissionManager {
     // MARK: - Screen Recording
 
     private func checkScreenRecording() -> Bool {
-        // Test by attempting to get window names from another app
-        guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
+        CGPreflightScreenCaptureAccess()
+    }
+
+    func requestScreenRecordingIfNeeded() async -> Bool {
+        if checkScreenRecording() {
+            return true
+        }
+
+        guard !hasRequestedScreenRecordingThisLaunch else {
             return false
         }
 
-        // Find a window from a different process
-        let currentPID = ProcessInfo.processInfo.processIdentifier
-        for window in windowList {
-            guard let ownerPID = window[kCGWindowOwnerPID as String] as? pid_t,
-                  ownerPID != currentPID else {
-                continue
-            }
-
-            // If we can get the window name for another process, we have permission
-            if window[kCGWindowName as String] != nil {
-                return true
-            }
+        hasRequestedScreenRecordingThisLaunch = true
+        let granted = await MainActor.run {
+            CGRequestScreenCaptureAccess()
         }
 
-        // If no window names were available, we likely don't have permission
-        // But this could also mean no other windows exist, so we assume granted
-        return windowList.count <= 1
-    }
-
-    private func requestScreenRecording() {
-        // Trigger the permission dialog by attempting to capture screen content
-        // This is done implicitly when CGWindowListCopyWindowInfo is called
-        _ = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)
-        print("[PermissionManager] Screen Recording permission requested (implicit)")
+        print("[PermissionManager] Screen Recording request result: \(granted)")
+        return granted || checkScreenRecording()
     }
 
     // MARK: - Open System Preferences

@@ -161,7 +161,12 @@ final class WindowEnumerator {
                 bundleIdentifier: bundleIdentifier,
                 name: name,
                 icon: icon,
-                windows: windows.map { WindowModel(from: $0) },
+                windows: windows.map { info in
+                    WindowModel(
+                        from: info,
+                        previewImage: WindowPreviewService.shared.cachedPreview(for: info.windowID)
+                    )
+                },
                 isActive: app.isActive
             ))
         }

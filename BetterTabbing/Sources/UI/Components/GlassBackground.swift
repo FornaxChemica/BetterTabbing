@@ -14,7 +14,9 @@ struct GlassBackground: View {
     }
 }
 
+#if DEBUG
 #Preview {
     GlassBackground(cornerRadius: 20)
         .frame(width: 300, height: 200)
 }
+#endif

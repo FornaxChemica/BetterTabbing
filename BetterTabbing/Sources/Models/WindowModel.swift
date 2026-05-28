@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 
 struct WindowModel: Identifiable, Hashable {
@@ -8,6 +9,7 @@ struct WindowModel: Identifiable, Hashable {
     let isMinimized: Bool
     let isOnScreen: Bool
     let spaceID: Int?
+    var previewImage: NSImage?
 
     // Extended metadata
     var subtitle: String?
@@ -19,6 +21,7 @@ struct WindowModel: Identifiable, Hashable {
         isMinimized: Bool = false,
         isOnScreen: Bool = true,
         spaceID: Int? = nil,
+        previewImage: NSImage? = nil,
         subtitle: String? = nil
     ) {
         self.id = windowID
@@ -28,10 +31,11 @@ struct WindowModel: Identifiable, Hashable {
         self.isMinimized = isMinimized
         self.isOnScreen = isOnScreen
         self.spaceID = spaceID
+        self.previewImage = previewImage
         self.subtitle = subtitle
     }
 
-    init(from info: WindowInfo) {
+    init(from info: WindowInfo, previewImage: NSImage? = nil) {
         self.id = info.windowID
         self.windowID = info.windowID
         // Use window name if available, otherwise fall back to app name
@@ -40,7 +44,12 @@ struct WindowModel: Identifiable, Hashable {
         self.isMinimized = info.isMinimized
         self.isOnScreen = info.isOnScreen
         self.spaceID = info.spaceID
+        self.previewImage = previewImage
         self.subtitle = nil
+    }
+
+    var canCapturePreview: Bool {
+        isOnScreen && !isMinimized && bounds.width > 1 && bounds.height > 1
     }
 
     func hash(into hasher: inout Hasher) {

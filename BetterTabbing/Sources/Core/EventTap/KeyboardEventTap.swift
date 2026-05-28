@@ -36,6 +36,25 @@ final class KeyboardEventTap {
     private var switcherVisible = false
     private var searchModeActive = false  // When true, don't auto-confirm on modifier release
 
+    private struct ActivationShortcut {
+        let name: String
+        let keyCode: UInt16
+        let modifiers: Set<ModifierKey>
+        let usesShiftForReverse: Bool
+        let showsImmediately: Bool
+    }
+
+    // Temporary diagnostics while validating event delivery and shortcut matching.
+    private let isKeyboardDebugLoggingEnabled = true
+    private let debugActivationShortcut = ActivationShortcut(
+        name: "Control+Shift+Space",
+        keyCode: UInt16(kVK_Space),
+        modifiers: [.control, .shift],
+        usesShiftForReverse: false,
+        showsImmediately: true
+    )
+    private var activeActivationShortcut: ActivationShortcut?
+
     // Quick-switch detection
     private var activationTime: CFAbsoluteTime = 0
     private var hadInteractionSinceActivation = false
@@ -64,6 +83,19 @@ final class KeyboardEventTap {
         disable()
     }
 
+    var isInstalled: Bool {
+        eventTap != nil
+    }
+
+    func installIfNeeded() {
+        guard eventTap == nil else {
+            print("[KeyboardEventTap] Event tap already installed")
+            return
+        }
+
+        setupEventTap()
+    }
+
     func disable() {
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
@@ -84,6 +116,7 @@ final class KeyboardEventTap {
             pendingActivation = false
             isHoldingQuit = false
             isHoldingE = false
+            activeActivationShortcut = nil
             showSwitcherTimer?.cancel()
             showSwitcherTimer = nil
         }
@@ -96,9 +129,54 @@ final class KeyboardEventTap {
 
     func setActivationModifier(_ modifier: ModifierKey) {
         activationModifier = modifier
+        print("[KeyboardEventTap] Activation modifier set to \(modifier.symbol); debug shortcut also active: \(debugActivationShortcut.name)")
+    }
+
+    private var configuredActivationShortcut: ActivationShortcut {
+        ActivationShortcut(
+            name: "\(activationModifier.symbol)+Tab",
+            keyCode: activationKeyCode,
+            modifiers: [activationModifier],
+            usesShiftForReverse: true,
+            showsImmediately: false
+        )
+    }
+
+    private func matchingActivationShortcut(for keyCode: UInt16) -> ActivationShortcut? {
+        if keyCode == debugActivationShortcut.keyCode,
+           modifierTracker.contains(debugActivationShortcut.modifiers) {
+            return debugActivationShortcut
+        }
+
+        let configuredShortcut = configuredActivationShortcut
+        if keyCode == configuredShortcut.keyCode,
+           modifierTracker.contains(configuredShortcut.modifiers) {
+            return configuredShortcut
+        }
+
+        return nil
+    }
+
+    private func activeShortcutMatches(keyCode: UInt16) -> ActivationShortcut? {
+        if let activeActivationShortcut,
+           keyCode == activeActivationShortcut.keyCode,
+           modifierTracker.contains(activeActivationShortcut.modifiers) {
+            return activeActivationShortcut
+        }
+
+        return matchingActivationShortcut(for: keyCode)
+    }
+
+    private func wasActiveActivationModifierReleased(oldFlags: CGEventFlags, newFlags: CGEventFlags) -> Bool {
+        let shortcut = activeActivationShortcut ?? configuredActivationShortcut
+        return shortcut.modifiers.contains { modifier in
+            modifierTracker.wasModifierReleased(oldFlags: oldFlags, newFlags: newFlags, modifier: modifier)
+        }
     }
 
     private func setupEventTap() {
+        print("[KeyboardEventTap] Installing event tap (inputMonitoring=\(CGPreflightListenEventAccess()))")
+
         // Events to monitor: key down, key up, flags changed (modifiers)
         let eventMask: CGEventMask = (
             (1 << CGEventType.keyDown.rawValue) |
@@ -132,7 +210,59 @@ final class KeyboardEventTap {
         CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
 
-        print("[KeyboardEventTap] Successfully created and enabled")
+        print("[KeyboardEventTap] Successfully created and enabled; test shortcut: \(debugActivationShortcut.name)")
+    }
+
+    private func logKeyboardEvent(type: CGEventType, keyCode: UInt16, flags: CGEventFlags, isRepeat: Bool) {
+        guard isKeyboardDebugLoggingEnabled else { return }
+
+        let typeName: String
+        switch type {
+        case .keyDown:
+            typeName = "keyDown"
+        case .keyUp:
+            typeName = "keyUp"
+        case .flagsChanged:
+            typeName = "flagsChanged"
+        default:
+            typeName = "event(\(type.rawValue))"
+        }
+
+        print("[KeyboardEventTap][debug] \(typeName) key=\(keyName(for: keyCode)) code=\(keyCode) flags=\(modifierDescription(from: flags)) tracker=\(modifierDescription(from: modifierTracker.currentModifierSet())) repeat=\(isRepeat)")
+    }
+
+    private func keyName(for keyCode: UInt16) -> String {
+        switch Int(keyCode) {
+        case kVK_Tab:
+            return "Tab"
+        case kVK_Space:
+            return "Space"
+        case kVK_ANSI_Grave:
+            return "Grave"
+        case kVK_Return:
+            return "Return"
+        case kVK_Escape:
+            return "Escape"
+        case kVK_LeftArrow:
+            return "LeftArrow"
+        case kVK_RightArrow:
+            return "RightArrow"
+        case kVK_UpArrow:
+            return "UpArrow"
+        case kVK_DownArrow:
+            return "DownArrow"
+        default:
+            return "Unknown"
+        }
+    }
+
+    private func modifierDescription(from flags: CGEventFlags) -> String {
+        modifierDescription(from: ModifierKey.allCases.filter { flags.contains($0.cgFlag) })
+    }
+
+    private func modifierDescription(from modifiers: some Sequence<ModifierKey>) -> String {
+        let symbols = modifiers.map(\.symbol).joined()
+        return symbols.isEmpty ? "none" : symbols
     }
 
     private func handleEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -147,15 +277,21 @@ final class KeyboardEventTap {
 
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
         let flags = event.flags
+        let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+
+        if type != .flagsChanged {
+            logKeyboardEvent(type: type, keyCode: keyCode, flags: flags, isRepeat: isRepeat)
+        }
 
         // Handle modifier changes
         if type == .flagsChanged {
             let oldFlags = previousFlags
             previousFlags = flags
             modifierTracker.update(flags: flags)
+            logKeyboardEvent(type: type, keyCode: keyCode, flags: flags, isRepeat: isRepeat)
 
-            // Check if activation modifier was released
-            if modifierTracker.wasModifierReleased(oldFlags: oldFlags, newFlags: flags, modifier: activationModifier) {
+            // Check if the active activation shortcut was released
+            if wasActiveActivationModifierReleased(oldFlags: oldFlags, newFlags: flags) {
                 let elapsed = CFAbsoluteTimeGetCurrent() - activationTime
 
                 // Cancel the show timer if pending
@@ -165,6 +301,7 @@ final class KeyboardEventTap {
                 // Quick switch: released before timer fired (UI never shown)
                 if pendingActivation && !hadInteractionSinceActivation {
                     pendingActivation = false
+                    activeActivationShortcut = nil
                     print("[KeyboardEventTap] Quick switch detected (\(Int(elapsed * 1000))ms)")
                     onShortcutTriggered.send(.quickSwitch)
                     return Unmanaged.passUnretained(event)
@@ -173,12 +310,14 @@ final class KeyboardEventTap {
                 // Normal release while switcher visible (not in search mode)
                 if switcherVisible && !searchModeActive {
                     pendingActivation = false
+                    activeActivationShortcut = nil
                     print("[KeyboardEventTap] Modifier released, confirming selection")
                     onShortcutTriggered.send(.confirm)
                     return Unmanaged.passUnretained(event)
                 }
 
                 pendingActivation = false
+                activeActivationShortcut = nil
             }
 
             return Unmanaged.passUnretained(event)
@@ -214,9 +353,9 @@ final class KeyboardEventTap {
 
         // Handle shortcuts while switcher is visible OR pending (check this FIRST)
         if switcherVisible || pendingActivation {
-            // TAB = cycle through apps (while holding modifier)
-            // If pending, this cancels quick-switch and shows the panel
-            if keyCode == activationKeyCode && modifierTracker.contains([activationModifier]) {
+            // Activation key = cycle through apps while holding the active shortcut modifiers.
+            // If pending, this cancels quick-switch and shows the panel.
+            if let shortcut = activeShortcutMatches(keyCode: keyCode) {
                 hadInteractionSinceActivation = true
 
                 // If still pending, cancel timer and show panel now
@@ -225,13 +364,13 @@ final class KeyboardEventTap {
                     showSwitcherTimer = nil
                     pendingActivation = false
                     switcherVisible = true
-                    print("[KeyboardEventTap] Second TAB pressed, showing switcher immediately")
+                    print("[KeyboardEventTap] Second activation key pressed (\(shortcut.name)), showing switcher immediately")
                     onShortcutTriggered.send(.showSwitcher)
-                    // Don't cycle yet - first show, next TAB will cycle
+                    // Don't cycle yet - first show, next activation key will cycle
                     return nil
                 }
 
-                if modifierTracker.isShiftPressed {
+                if shortcut.usesShiftForReverse && modifierTracker.isShiftPressed {
                     print("[KeyboardEventTap] Cycle previous")
                     onShortcutTriggered.send(.cyclePrevious)
                 } else {
@@ -381,23 +520,34 @@ final class KeyboardEventTap {
             return Unmanaged.passUnretained(event)
         }
 
-        // Check for activation shortcut (OPTION+TAB by default) - only when switcher not visible
-        if keyCode == activationKeyCode && modifierTracker.contains([activationModifier]) && !pendingActivation {
-            print("[KeyboardEventTap] Activation started (switcherVisible=\(switcherVisible))")
+        // Check for activation shortcut only when switcher is not visible.
+        if let shortcut = matchingActivationShortcut(for: keyCode), !pendingActivation {
+            print("[KeyboardEventTap] Activation started via \(shortcut.name) (switcherVisible=\(switcherVisible))")
             activationTime = CFAbsoluteTimeGetCurrent()
             hadInteractionSinceActivation = false
             pendingActivation = true
+            activeActivationShortcut = shortcut
 
             // Notify that activation started (for pre-caching)
             onShortcutTriggered.send(.activationStarted)
 
-            // Start timer to show switcher if not released quickly
+            // The temporary diagnostic shortcut should prove the event path immediately.
             showSwitcherTimer?.cancel()
+            if shortcut.showsImmediately {
+                pendingActivation = false
+                switcherVisible = true
+                activeActivationShortcut = nil
+                print("[KeyboardEventTap] Showing switcher immediately via \(shortcut.name)")
+                onShortcutTriggered.send(.showSwitcher)
+                return nil
+            }
+
+            // Start timer to show switcher if not released quickly
             let timer = DispatchWorkItem { [weak self] in
                 guard let self = self, self.pendingActivation else { return }
                 self.pendingActivation = false
                 self.switcherVisible = true
-                print("[KeyboardEventTap] Timer fired, showing switcher")
+                print("[KeyboardEventTap] Timer fired, showing switcher via \(self.activeActivationShortcut?.name ?? "unknown shortcut")")
                 self.onShortcutTriggered.send(.showSwitcher)
             }
             showSwitcherTimer = timer

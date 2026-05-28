@@ -7,7 +7,7 @@ set -e  # Exit on any error
 
 # Configuration
 APP_NAME="BetterTabbing"
-BUNDLE_ID="com.sparechange.BetterTabbing"
+BUNDLE_ID="com.fornaxchemica.bettertabbing"
 VERSION="1.0.0"
 BUILD_NUMBER="1"
 MIN_MACOS="13.0"

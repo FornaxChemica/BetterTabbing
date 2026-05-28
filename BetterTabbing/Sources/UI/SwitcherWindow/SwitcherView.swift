@@ -10,10 +10,10 @@ struct SwitcherView: View {
         appState.isSearchActive && !appState.searchQuery.isEmpty
     }
 
-    /// Whether selected app has multiple windows to show
+    /// Whether selected app has a real window preview strip to show
     private var showWindowList: Bool {
         guard let selectedApp = appState.selectedApp else { return false }
-        return selectedApp.hasMultipleWindows && !showSearchResults
+        return selectedApp.windows.contains { $0.canCapturePreview || $0.isMinimized } && !showSearchResults
     }
 
     var body: some View {
@@ -77,7 +77,31 @@ struct SwitcherView: View {
                     .padding(.bottom, 10)
 
             } else {
-                // App grid (normal mode) - explicitly disable animation on grid content
+                if showWindowList, let selectedApp = appState.selectedApp {
+                    WindowListView(
+                        app: selectedApp,
+                        selectedWindowIndex: appState.selectedWindowIndex,
+                        onWindowHovered: { index in
+                            guard appState.shouldProcessMouseInput else { return }
+                            appState.selectedWindowIndex = index
+                        },
+                        onWindowClicked: { index in
+                            appState.selectedWindowIndex = index
+                            confirmSelection()
+                        }
+                    )
+                    .onContinuousHover { phase in
+                        if case .active = phase {
+                            appState.markMouseNavigation(at: NSEvent.mouseLocation)
+                        }
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.top, 18)
+                    .padding(.bottom, 8)
+                    .transition(.opacity.combined(with: .scale(scale: 0.985)).animation(.easeOut(duration: 0.16)))
+                }
+
+                // App grid becomes a quiet dock-like selector when previews are present.
                 AppGridView(
                     applications: appState.filteredApplications,
                     selectedIndex: appState.selectedAppIndex,
@@ -102,48 +126,37 @@ struct SwitcherView: View {
                         appState.markMouseNavigation(at: NSEvent.mouseLocation)
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 14)
+                .padding(.horizontal, showWindowList ? 20 : 16)
+                .padding(.top, showWindowList ? 6 : 14)
+                .padding(.bottom, showWindowList ? 8 : 14)
+                .opacity(showWindowList ? 0.86 : 1.0)
+                .background {
+                    if showWindowList {
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .fill(Color.white.opacity(0.035))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 4)
+                    }
+                }
 
                 // Keyboard hints - minimal and sleek
                 keyboardHintsView
                     .padding(.horizontal, 16)
                     .padding(.bottom, 10)
-
-                // Window list expands below when app has multiple windows
-                if showWindowList, let selectedApp = appState.selectedApp {
-                    VStack(spacing: 0) {
-                        Divider()
-                            .padding(.horizontal, 16)
-
-                        WindowListView(
-                            app: selectedApp,
-                            selectedWindowIndex: appState.selectedWindowIndex,
-                            onWindowHovered: { index in
-                                guard appState.shouldProcessMouseInput else { return }
-                                appState.selectedWindowIndex = index
-                            },
-                            onWindowClicked: { index in
-                                appState.selectedWindowIndex = index
-                                confirmSelection()
-                            }
-                        )
-                        .onContinuousHover { phase in
-                            if case .active = phase {
-                                appState.markMouseNavigation(at: NSEvent.mouseLocation)
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                    }
-                    .transition(.opacity.animation(.easeOut(duration: 0.15)))
-                }
             }
         }
         .frame(width: calculateWidth())
         .fixedSize(horizontal: false, vertical: true)  // Let height be determined by content
-        .background(GlassBackground(cornerRadius: 16))
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(GlassBackground(cornerRadius: 28))
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.75)
+        )
+        .shadow(color: .black.opacity(0.22), radius: 30, x: 0, y: 18)
+        .shadow(color: .black.opacity(0.10), radius: 8, x: 0, y: 3)
+        .animation(.spring(response: 0.24, dampingFraction: 0.88), value: appState.selectedAppIndex)
+        .animation(.spring(response: 0.24, dampingFraction: 0.9), value: appState.selectedWindowIndex)
         .onChange(of: appState.isSearchActive) { oldValue, isActive in
             if isActive {
                 appState.selectedSearchIndex = 0
@@ -211,8 +224,8 @@ struct SwitcherView: View {
         // Keyboard hints
         let hintsHeight: CGFloat = 30
 
-        // Window list if showing
-        let windowListHeight: CGFloat = showWindowList ? 70 : 0
+        // Window preview stage if showing
+        let windowListHeight: CGFloat = showWindowList ? 252 : 0
 
         return searchBarHeight + gridHeight + hintsHeight + windowListHeight
     }

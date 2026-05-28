@@ -1,11 +1,14 @@
 import AppKit
 import SwiftUI
 import Combine
+import QuartzCore
 
 final class SwitcherPanel: NSPanel {
     private var hostingView: NSHostingView<AnyView>?
     private var cancellables = Set<AnyCancellable>()
     private var clickOutsideMonitor: Any?
+    private let entranceDuration: TimeInterval = 0.12
+    private let dismissalDuration: TimeInterval = 0.08
 
     /// The Y position of the top of the app grid (used to anchor expansions)
     private var gridTopY: CGFloat = 0
@@ -71,6 +74,7 @@ final class SwitcherPanel: NSPanel {
         // This prevents conflicts between NSPanel's frame-based layout and SwiftUI's layout system
         hostingView?.translatesAutoresizingMaskIntoConstraints = true
         hostingView?.autoresizingMask = [.width, .height]
+        hostingView?.wantsLayer = true
 
         contentView = hostingView
     }
@@ -134,9 +138,10 @@ final class SwitcherPanel: NSPanel {
         // Check if showing search results
         let showSearchResults = isSearchActive && !searchQuery.isEmpty
 
-        // Check if showing window list
+        // Check if showing window preview strip
         let selectedApp = appState.selectedApp
-        let showWindowList = !showSearchResults && (selectedApp?.hasMultipleWindows ?? false)
+        let showWindowList = !showSearchResults
+            && (selectedApp?.windows.contains { $0.canCapturePreview || $0.isMinimized } ?? false)
 
         // Width calculation
         let width: CGFloat
@@ -174,7 +179,7 @@ final class SwitcherPanel: NSPanel {
             let gridSpacing: CGFloat = 6
             let gridHeight = rows * tileHeight + (rows - 1) * gridSpacing + 28  // +28 for vertical padding
             let hintsHeight: CGFloat = 30
-            let windowListHeight: CGFloat = showWindowList ? 70 : 0
+            let windowListHeight: CGFloat = showWindowList ? 252 : 0
             contentHeight = gridHeight + hintsHeight + windowListHeight
         }
 
@@ -288,9 +293,7 @@ final class SwitcherPanel: NSPanel {
         // Store the top of the grid as anchor point (top of panel since no search bar initially)
         gridTopY = origin.y + panelSize.height
 
-        // Show instantly (no fade for speed)
-        alphaValue = 1
-        makeKeyAndOrderFront(nil)
+        presentWithEntranceAnimation()
 
         // Start monitoring for clicks outside the panel
         startClickOutsideMonitor()
@@ -331,9 +334,7 @@ final class SwitcherPanel: NSPanel {
         // Store the top of the grid as anchor point (top of panel since no search bar initially)
         gridTopY = origin.y + panelSize.height
 
-        // Show instantly
-        alphaValue = 1
-        makeKeyAndOrderFront(nil)
+        presentWithEntranceAnimation()
 
         // Start monitoring for clicks outside the panel
         startClickOutsideMonitor()
@@ -375,9 +376,7 @@ final class SwitcherPanel: NSPanel {
         // Store the top of the grid as anchor point
         gridTopY = origin.y + panelSize.height
 
-        // Show instantly
-        alphaValue = 1
-        makeKeyAndOrderFront(nil)
+        presentWithEntranceAnimation()
 
         // Start monitoring for clicks outside (posts notification for manager to handle)
         startClickOutsideMonitor()
@@ -391,20 +390,64 @@ final class SwitcherPanel: NSPanel {
     /// Hide the panel without resetting AppState (used by manager)
     func hidePanel() {
         stopClickOutsideMonitor()
-        alphaValue = 0
-        orderOut(nil)
+        dismissWithExitAnimation()
     }
 
     func hide() {
         // Stop monitoring clicks
         stopClickOutsideMonitor()
 
-        // Hide instantly for responsiveness
-        alphaValue = 0
-        orderOut(nil)
+        dismissWithExitAnimation()
         AppState.shared.reset()
 
         print("[SwitcherPanel] Hidden")
+    }
+
+    private func presentWithEntranceAnimation() {
+        hostingView?.layer?.removeAnimation(forKey: "switcherScaleOut")
+        hostingView?.layer?.setAffineTransform(.identity)
+        alphaValue = 0
+        makeKeyAndOrderFront(nil)
+
+        let scaleAnimation = CABasicAnimation(keyPath: "transform.scale")
+        scaleAnimation.fromValue = 0.985
+        scaleAnimation.toValue = 1.0
+        scaleAnimation.duration = entranceDuration
+        scaleAnimation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        hostingView?.layer?.add(scaleAnimation, forKey: "switcherScaleIn")
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = entranceDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            animator().alphaValue = 1
+        }
+    }
+
+    private func dismissWithExitAnimation() {
+        guard isVisible else {
+            alphaValue = 0
+            orderOut(nil)
+            return
+        }
+
+        hostingView?.layer?.removeAnimation(forKey: "switcherScaleIn")
+        let scaleAnimation = CABasicAnimation(keyPath: "transform.scale")
+        scaleAnimation.fromValue = 1.0
+        scaleAnimation.toValue = 0.985
+        scaleAnimation.duration = dismissalDuration
+        scaleAnimation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        hostingView?.layer?.add(scaleAnimation, forKey: "switcherScaleOut")
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = dismissalDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            animator().alphaValue = 0
+        } completionHandler: { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.hostingView?.layer?.setAffineTransform(.identity)
+                self?.orderOut(nil)
+            }
+        }
     }
 
     private func startClickOutsideMonitor() {

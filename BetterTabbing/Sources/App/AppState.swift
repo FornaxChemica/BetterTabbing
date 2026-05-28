@@ -106,6 +106,28 @@ final class AppState: ObservableObject {
         return FuzzyMatcher.filter(applications, query: searchQuery)
     }
 
+    func setWindowPreview(_ image: NSImage, for windowID: CGWindowID) {
+        var updatedApplications = applications
+        var didUpdate = false
+
+        for appIndex in updatedApplications.indices {
+            guard let windowIndex = updatedApplications[appIndex].windows.firstIndex(where: { $0.windowID == windowID }) else {
+                continue
+            }
+
+            guard updatedApplications[appIndex].windows[windowIndex].previewImage == nil else {
+                continue
+            }
+
+            updatedApplications[appIndex].windows[windowIndex].previewImage = image
+            didUpdate = true
+        }
+
+        if didUpdate {
+            applications = updatedApplications
+        }
+    }
+
     // MARK: - Navigation Methods
 
     /// Call this when keyboard navigation is used
