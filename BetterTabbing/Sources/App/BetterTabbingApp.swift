@@ -7,7 +7,7 @@ struct BetterTabbingApp: App {
 
     var body: some Scene {
         // Menu bar only - no dock icon
-        MenuBarExtra("BetterTabbing", systemImage: "rectangle.stack") {
+        MenuBarExtra("WindowLens", systemImage: "rectangle.stack") {
             MenuBarView()
                 .environmentObject(appState)
         }
@@ -23,7 +23,7 @@ struct MenuBarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("BetterTabbing")
+            Text("WindowLens")
                 .font(.headline)
 
             Divider()
@@ -45,7 +45,17 @@ struct MenuBarView: View {
 
             Divider()
 
-            Button("Quit BetterTabbing") {
+            Button("Reinstall Event Tap") {
+                NotificationCenter.default.post(name: .reinstallEventTap, object: nil)
+            }
+
+            Button("Open Permissions") {
+                NotificationCenter.default.post(name: .openPermissions, object: nil)
+            }
+
+            Divider()
+
+            Button("Quit WindowLens") {
                 NSApplication.shared.terminate(nil)
             }
             .keyboardShortcut("q", modifiers: .command)
@@ -98,7 +108,7 @@ struct GeneralSettingsView: View {
                 KeyboardShortcutRow(title: "Native preview sync", shortcut: "⌘ TAB")
                 KeyboardShortcutRow(title: "Workspace mode", shortcut: "⌥ TAB")
 
-                Text("Command-Tab remains native. Option-Tab opens BetterTabbing workspace mode with focused navigation and search.")
+                Text("Command-Tab remains native. Option-Tab opens WindowLens workspace mode with focused navigation and search.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -241,14 +251,14 @@ struct AboutView: View {
                 .font(.system(size: 64))
                 .foregroundStyle(.blue)
 
-            Text("BetterTabbing")
+            Text("WindowLens")
                 .font(.title)
                 .fontWeight(.bold)
 
             Text("Version 1.0.0")
                 .foregroundStyle(.secondary)
 
-            Text("Native workspace preview augmentation for macOS")
+            Text("macOS window switching and native Cmd-Tab preview augmentation")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 

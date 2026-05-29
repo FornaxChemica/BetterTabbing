@@ -3,9 +3,12 @@ import AppKit
 import ApplicationServices
 
 final class WindowEnumerator {
+    private let isEnumerationDebugLoggingEnabled = false
+    private var hasLoggedMissingAccessibility = false
 
     struct EnumerationOptions {
         var includeMinimized: Bool = true
+        var includeAllSpaces: Bool = true
         var minimumWidth: CGFloat = 50
         var minimumHeight: CGFloat = 50
 
@@ -24,7 +27,16 @@ final class WindowEnumerator {
     /// Enumerate windows using Accessibility API as the primary source
     /// This is more reliable for window switching since we use AX to raise windows
     func enumerateGroupedByApp(options: EnumerationOptions = .default) -> [ApplicationModel] {
+        guard AXIsProcessTrusted() else {
+            if !hasLoggedMissingAccessibility {
+                print("[WindowEnumerator] Skipping window enumeration: Accessibility is not granted")
+                hasLoggedMissingAccessibility = true
+            }
+            return []
+        }
+
         let excludedBundleIDs = Set(UserPreferences.load().excludedBundleIDs)
+        let currentSpaceWindowIDs = Self.currentSpaceWindowIDs()
 
         // Get all running apps with regular activation policy (visible in Dock)
         let runningApps = NSWorkspace.shared.runningApplications.filter { app in
@@ -62,8 +74,9 @@ final class WindowEnumerator {
             }
 
             var windows: [WindowInfo] = []
+            var rejectedWindows: [String] = []
 
-            for axWindow in axWindows {
+            for (axIndex, axWindow) in axWindows.enumerated() {
                 // Get window ID
                 var windowID: CGWindowID = 0
                 let idResult = _AXUIElementGetWindow(axWindow, &windowID)
@@ -89,17 +102,22 @@ final class WindowEnumerator {
                     AXValueGetValue(sizeValue as! AXValue, .cgSize, &size)
                 }
 
-                // Skip tiny windows
-                if size.width < options.minimumWidth || size.height < options.minimumHeight {
-                    continue
-                }
-
                 // Check if minimized
                 var minimizedRef: CFTypeRef?
                 AXUIElementCopyAttributeValue(axWindow, kAXMinimizedAttribute as CFString, &minimizedRef)
                 let isMinimized = (minimizedRef as? Bool) ?? false
 
                 if isMinimized && !options.includeMinimized {
+                    rejectedWindows.append("#\(axIndex) minimized hidden title=\(title ?? "untitled")")
+                    continue
+                }
+
+                // Skip tiny live windows only for current-Space workspace views. All-Spaces
+                // enumeration can receive temporarily collapsed off-Space geometry.
+                if !isMinimized,
+                   !options.includeAllSpaces,
+                   (size.width < options.minimumWidth || size.height < options.minimumHeight) {
+                    rejectedWindows.append("#\(axIndex) tiny title=\(title ?? "untitled") size=\(Int(size.width))x\(Int(size.height))")
                     continue
                 }
 
@@ -113,30 +131,48 @@ final class WindowEnumerator {
                 if let subrole = subrole {
                     let invalidSubroles = ["AXSystemDialog", "AXSheet", "AXDrawer", "AXUnknown"]
                     if invalidSubroles.contains(subrole) {
+                        rejectedWindows.append("#\(axIndex) subrole=\(subrole) title=\(title ?? "untitled")")
                         continue
                     }
                 }
 
                 // Use a valid window ID, or generate a unique one based on index
                 let finalWindowID: CGWindowID
+                let hasReliableWindowID: Bool
                 if idResult == .success && windowID != 0 {
                     finalWindowID = windowID
+                    hasReliableWindowID = true
                 } else {
-                    // Generate a pseudo-ID from PID and window index. Preview capture will
-                    // fall back to ScreenCaptureKit PID/title/geometry matching for these.
-                    finalWindowID = CGWindowID(pid) << 16 | CGWindowID(windows.count)
+                    finalWindowID = PreviewIdentity.pseudoWindowID(
+                        ownerPID: pid,
+                        axIndex: axIndex,
+                        title: title ?? name,
+                        bounds: CGRect(origin: position, size: size)
+                    )
+                    hasReliableWindowID = false
                     print("[WindowEnumerator][preview] missing AX CGWindowID for \(name) title=\(title ?? "untitled") axResult=\(idResult.rawValue); using pseudoID=\(finalWindowID)")
+                }
+
+                let isOnCurrentSpace = hasReliableWindowID
+                    ? currentSpaceWindowIDs?.contains(finalWindowID) ?? true
+                    : options.includeAllSpaces
+                if !options.includeAllSpaces && !isMinimized && !isOnCurrentSpace {
+                    rejectedWindows.append("#\(axIndex) off-space title=\(title ?? "untitled") id=\(finalWindowID)")
+                    continue
                 }
 
                 windows.append(WindowInfo(
                     windowID: finalWindowID,
                     ownerPID: pid,
+                    ownerBundleIdentifier: bundleIdentifier,
+                    axIndex: axIndex,
                     ownerName: name,
                     windowName: title,
                     bounds: CGRect(origin: position, size: size),
-                    isOnScreen: !isMinimized,
+                    isOnScreen: !isMinimized && isOnCurrentSpace,
                     isMinimized: isMinimized,
-                    spaceID: nil
+                    spaceID: nil,
+                    hasReliableWindowID: hasReliableWindowID
                 ))
             }
 
@@ -144,18 +180,25 @@ final class WindowEnumerator {
 
             // If no windows found through AX, create a synthetic window
             // This ensures apps like Steam/games still appear in the switcher
-            if windows.isEmpty {
+            if windows.isEmpty && axWindows.isEmpty {
                 let syntheticWindow = WindowInfo(
                     windowID: CGWindowID(pid),
                     ownerPID: pid,
+                    ownerBundleIdentifier: bundleIdentifier,
+                    axIndex: nil,
                     ownerName: name,
                     windowName: name,  // Use app name as window title
                     bounds: .zero,
                     isOnScreen: true,
                     isMinimized: false,
-                    spaceID: nil
+                    spaceID: nil,
+                    hasReliableWindowID: false
                 )
                 windows.append(syntheticWindow)
+            }
+
+            guard !windows.isEmpty else {
+                continue
             }
 
             applications.append(ApplicationModel(
@@ -167,15 +210,27 @@ final class WindowEnumerator {
                     WindowModel(
                         from: info,
                         previewImage: WindowPreviewService.shared.cachedPreview(
-                            for: info.windowID,
-                            ownerPID: info.ownerPID,
-                            title: info.windowName ?? info.ownerName,
-                            bounds: info.bounds
+                            for: PreviewIdentity(
+                                ownerPID: info.ownerPID,
+                                bundleIdentifier: info.ownerBundleIdentifier,
+                                cgWindowID: info.windowID,
+                                axIndex: info.axIndex,
+                                title: info.windowName ?? info.ownerName,
+                                bounds: info.bounds,
+                                hasReliableCGWindowID: info.hasReliableWindowID
+                            )
                         )
                     )
                 },
                 isActive: app.isActive
             ))
+
+            logInventory(
+                appName: name,
+                axWindowCount: axWindows.count,
+                acceptedWindows: windows,
+                rejectedWindows: rejectedWindows
+            )
         }
 
         // Sort: active app first, then alphabetically by name
@@ -184,5 +239,36 @@ final class WindowEnumerator {
             if !app1.isActive && app2.isActive { return false }
             return app1.name.localizedCaseInsensitiveCompare(app2.name) == .orderedAscending
         }
+    }
+
+    private static func currentSpaceWindowIDs() -> Set<CGWindowID>? {
+        guard let windowList = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else {
+            return nil
+        }
+
+        return Set(windowList.compactMap { info in
+            guard let number = info[kCGWindowNumber as String] as? NSNumber else {
+                return nil
+            }
+            return CGWindowID(number.uint32Value)
+        })
+    }
+
+    private func logInventory(
+        appName: String,
+        axWindowCount: Int,
+        acceptedWindows: [WindowInfo],
+        rejectedWindows: [String]
+    ) {
+        guard isEnumerationDebugLoggingEnabled else { return }
+
+        let accepted = acceptedWindows
+            .map { "#\($0.axIndex.map(String.init) ?? "-") id=\($0.windowID) reliable=\($0.hasReliableWindowID) minimized=\($0.isMinimized) onScreen=\($0.isOnScreen) title=\($0.windowName ?? "untitled")" }
+            .joined(separator: " | ")
+        let rejected = rejectedWindows.isEmpty ? "none" : rejectedWindows.joined(separator: " | ")
+        print("[WindowEnumerator][debug] \(appName): AX=\(axWindowCount) accepted=\(acceptedWindows.count) windows=\(accepted.isEmpty ? "none" : accepted) rejected=\(rejected)")
     }
 }

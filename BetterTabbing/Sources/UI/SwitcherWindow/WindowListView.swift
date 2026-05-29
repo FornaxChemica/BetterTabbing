@@ -13,7 +13,7 @@ struct WindowListView: View {
     private var surfaceItems: [WindowSurfaceItem] {
         app.windows.enumerated().map { index, window in
             WindowSurfaceItem(
-                id: window.compositorIdentity(ownerPID: app.pid),
+                id: window.previewIdentity.surfaceID,
                 index: index,
                 window: window
             )
@@ -23,31 +23,44 @@ struct WindowListView: View {
     var body: some View {
         GeometryReader { geometry in
             ScrollViewReader { proxy in
+                let maximumPreviewWidth = maximumPreviewWidth(containerWidth: geometry.size.width)
+
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(alignment: .center, spacing: app.hasMultipleWindows ? 18 : 0) {
-                        ForEach(surfaceItems) { item in
-                            WindowPreviewSurfaceView(
-                                window: item.window,
-                                appName: app.name,
-                                appIcon: app.icon,
-                                isSelected: item.index == selectedWindowIndex,
-                                distanceFromSelection: abs(item.index - selectedWindowIndex),
-                                presentationMode: presentationMode,
-                                onHover: { isHovering in
-                                    if isHovering {
-                                        onWindowHovered?(item.index)
+                    liquidGlassGroup {
+                        HStack(alignment: .center, spacing: app.hasMultipleWindows ? 18 : 0) {
+                            ForEach(surfaceItems) { item in
+                                WindowPreviewSurfaceView(
+                                    window: item.window,
+                                    appName: app.name,
+                                    appIcon: app.icon,
+                                    isSelected: item.index == selectedWindowIndex,
+                                    distanceFromSelection: abs(item.index - selectedWindowIndex),
+                                    presentationMode: presentationMode,
+                                    maximumPreviewWidth: maximumPreviewWidth,
+                                    onHover: { isHovering in
+                                        if isHovering {
+                                            onWindowHovered?(item.index)
+                                        }
                                     }
+                                )
+                                .onTapGesture {
+                                    onWindowClicked?(item.index)
                                 }
-                            )
-                            .onTapGesture {
-                                onWindowClicked?(item.index)
+                                .zIndex(item.index == selectedWindowIndex ? 10 : Double(5 - abs(item.index - selectedWindowIndex)))
                             }
-                            .zIndex(item.index == selectedWindowIndex ? 10 : Double(5 - abs(item.index - selectedWindowIndex)))
                         }
+                        .frame(minWidth: geometry.size.width, alignment: app.hasMultipleWindows ? .leading : .center)
+                        .padding(.horizontal, app.hasMultipleWindows ? 18 : 0)
+                        .padding(.vertical, 18)
                     }
-                    .frame(minWidth: geometry.size.width, alignment: app.hasMultipleWindows ? .leading : .center)
-                    .padding(.horizontal, app.hasMultipleWindows ? 18 : 0)
-                    .padding(.vertical, 18)
+                }
+                .mask(scrollMask)
+                .onAppear {
+                    guard app.hasMultipleWindows,
+                          surfaceItems.indices.contains(selectedWindowIndex) else { return }
+                    DispatchQueue.main.async {
+                        proxy.scrollTo(surfaceItems[selectedWindowIndex].id, anchor: .center)
+                    }
                 }
                 .onChange(of: selectedWindowIndex) { oldValue, newValue in
                     guard surfaceItems.indices.contains(newValue) else { return }
@@ -64,7 +77,7 @@ struct WindowListView: View {
         .onChange(of: app.id) { oldValue, newValue in
             requestMissingPreviews()
         }
-        .onChange(of: app.windows.map(\.windowID)) { oldValue, newValue in
+        .onChange(of: app.windows.map(\.previewIdentity)) { oldValue, newValue in
             requestMissingPreviews()
         }
         .onChange(of: app.windows.map(\.title)) { oldValue, newValue in
@@ -82,17 +95,92 @@ struct WindowListView: View {
             }
 
             guard update.ownerPID == nil || update.ownerPID == app.pid else { return }
-            guard app.windows.contains(where: { $0.windowID == update.windowID }) else { return }
+            guard app.windows.contains(where: { $0.previewIdentity.matches(update.previewIdentity) }) else { return }
 
             appState.setWindowPreview(update)
         }
+    }
+
+    private var isNativePreviewCarousel: Bool {
+        presentationMode == .nativePreview
+    }
+
+    private var isCurrentAppWorkspaceCarousel: Bool {
+        presentationMode == .workspace && appState.workspaceMode == .currentAppWindows
+    }
+
+    private var usesAdaptiveWindowCarousel: Bool {
+        isNativePreviewCarousel || isCurrentAppWorkspaceCarousel
+    }
+
+    private var usesPeekMask: Bool {
+        usesAdaptiveWindowCarousel && app.windows.count >= 4
+    }
+
+    private var scrollMask: some View {
+        Group {
+            if usesPeekMask {
+                HStack(spacing: 0) {
+                    LinearGradient(
+                        colors: [.clear, .black],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .frame(width: 42)
+
+                    Rectangle()
+                        .fill(.black)
+
+                    LinearGradient(
+                        colors: [.black, .clear],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .frame(width: 42)
+                }
+            } else {
+                Rectangle()
+                    .fill(.black)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func liquidGlassGroup<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        if #available(macOS 26.0, *), presentationMode == .nativePreview {
+            GlassEffectContainer(spacing: app.hasMultipleWindows ? 18 : 0) {
+                content()
+            }
+        } else {
+            content()
+        }
+    }
+
+    private func maximumPreviewWidth(containerWidth: CGFloat) -> CGFloat? {
+        guard usesAdaptiveWindowCarousel else { return nil }
+
+        let count = max(surfaceItems.count, 1)
+        if count >= 2 && count <= 3 {
+            let spacing = CGFloat(count - 1) * 18
+            let listPadding: CGFloat = app.hasMultipleWindows ? 36 : 0
+            let surfacePadding = CGFloat(count) * 16
+            let available = containerWidth - spacing - listPadding - surfacePadding
+            return min(410, max(150, floor(available / CGFloat(count))))
+        }
+
+        if count >= 4 {
+            return 410
+        }
+
+        return nil
     }
 
     private func requestMissingPreviews() {
         WindowPreviewService.shared.requestPreviews(
             for: app.windows,
             ownerPID: app.pid,
-            appName: app.name
+            appName: app.name,
+            selectionGeneration: appState.previewRequestGeneration(for: presentationMode)
         )
     }
 }
@@ -110,51 +198,71 @@ private struct WindowPreviewSurfaceView: View {
     let isSelected: Bool
     let distanceFromSelection: Int
     let presentationMode: SwitcherPresentationMode
+    let maximumPreviewWidth: CGFloat?
     var onHover: ((Bool) -> Void)? = nil
 
     @State private var isHovered = false
 
     private var geometry: AdaptivePreviewGeometry {
-        AdaptivePreviewGeometry(window: window, presentationMode: presentationMode)
+        AdaptivePreviewGeometry(
+            window: window,
+            presentationMode: presentationMode,
+            maximumPreviewWidth: maximumPreviewWidth
+        )
     }
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            ZStack {
-                Color.black.opacity(0.10)
+            if window.isWindowlessPlaceholder {
+                WindowlessPreviewSurface(
+                    appName: appName,
+                    appIcon: appIcon,
+                    geometry: geometry
+                )
+                .frame(width: geometry.visualSize.width, height: geometry.visualSize.height)
+            } else {
+                ZStack {
+                    if let previewImage = window.previewImage {
+                        ZStack(alignment: .topTrailing) {
+                            Image(nsImage: previewImage)
+                                .resizable()
+                                .interpolation(.high)
+                                .aspectRatio(contentMode: .fit)
+                                .frame(width: geometry.visualSize.width, height: geometry.visualSize.height)
+                                .clipped()
+                                .transition(.opacity.animation(.easeOut(duration: 0.16)))
 
-                if let previewImage = window.previewImage {
-                    Image(nsImage: previewImage)
-                        .resizable()
-                        .interpolation(.high)
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: geometry.visualSize.width, height: geometry.visualSize.height)
-                        .clipped()
-                        .transition(.opacity.animation(.easeOut(duration: 0.16)))
-                } else {
-                    WindowPreviewPlaceholder(isMinimized: window.isMinimized, geometry: geometry)
-                        .frame(width: geometry.visualSize.width, height: geometry.visualSize.height)
+                            if window.isMinimized {
+                                statusPill("Minimized")
+                                    .padding(10)
+                            }
+                        }
+                    } else {
+                        WindowPreviewPlaceholder(isMinimized: window.isMinimized, geometry: geometry)
+                            .frame(width: geometry.visualSize.width, height: geometry.visualSize.height)
+                    }
                 }
-            }
-            .frame(width: geometry.visualSize.width, height: geometry.visualSize.height)
-            .clipShape(RoundedRectangle(cornerRadius: geometry.cornerRadius, style: .continuous))
-            .overlay(previewBorder)
-            .shadow(
-                color: .black.opacity(isSelected ? 0.22 : 0.10),
-                radius: isSelected ? 22 : 10,
-                x: 0,
-                y: isSelected ? 14 : 7
-            )
-            .shadow(
-                color: .white.opacity(isSelected ? 0.06 : 0.0),
-                radius: 18,
-                x: 0,
-                y: 0
-            )
+                .frame(width: geometry.visualSize.width, height: geometry.visualSize.height)
+                .clipShape(RoundedRectangle(cornerRadius: geometry.cornerRadius, style: .continuous))
+                .overlay(previewBorder)
+                .shadow(
+                    color: .black.opacity(isSelected ? 0.22 : 0.10),
+                    radius: isSelected ? 22 : 10,
+                    x: 0,
+                    y: isSelected ? 14 : 7
+                )
+                .shadow(
+                    color: .white.opacity(isSelected ? 0.06 : 0.0),
+                    radius: 18,
+                    x: 0,
+                    y: 0
+                )
 
-            metadataPill
-                .padding(.leading, geometry.metadataInset)
-                .padding(.bottom, geometry.metadataInset)
+                metadataPill
+                    .padding(.leading, geometry.metadataInset)
+                    .padding(.bottom, geometry.metadataInset)
+                    .zIndex(50)
+            }
         }
         .frame(width: geometry.visualSize.width, height: geometry.visualSize.height, alignment: .bottomLeading)
         .padding(.horizontal, 8)
@@ -174,61 +282,69 @@ private struct WindowPreviewSurfaceView: View {
     }
 
     private var metadataPill: some View {
-        HStack(spacing: geometry.isMetadataCompact ? 6 : 8) {
-            if geometry.metadataWidth >= 92 {
-                Image(nsImage: appIcon)
-                    .resizable()
-                    .interpolation(.high)
-                    .frame(width: geometry.isMetadataCompact ? 16 : 18, height: geometry.isMetadataCompact ? 16 : 18)
-                    .cornerRadius(4)
-                    .layoutPriority(1)
-            }
+        NativeLiquidGlassSurface(
+            cornerRadius: 12,
+            nativeStyle: .clear,
+            tintOpacity: 0.02,
+            strokeOpacity: 0.06,
+            shadowOpacity: 0.04,
+            shadowRadius: 8,
+            shadowYOffset: 4
+        ) {
+            HStack(spacing: geometry.isMetadataCompact ? 6 : 8) {
+                if geometry.metadataWidth >= 92 {
+                    Image(nsImage: appIcon)
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: geometry.isMetadataCompact ? 16 : 18, height: geometry.isMetadataCompact ? 16 : 18)
+                        .cornerRadius(4)
+                        .layoutPriority(1)
+                }
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(window.title)
-                    .font(.system(size: geometry.isMetadataCompact ? 10 : 11, weight: isSelected ? .semibold : .medium))
-                    .foregroundStyle(isSelected ? .primary : .secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-
-                if presentationMode == .workspace && !geometry.isMetadataCompact {
-                    Text(appName)
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.tertiary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(window.title)
+                        .font(.system(size: geometry.isMetadataCompact ? 10 : 11, weight: isSelected ? .semibold : .medium))
+                        .foregroundStyle(isSelected ? .primary : .secondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
+
+                    if presentationMode == .workspace && !geometry.isMetadataCompact {
+                        Text(appName)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+
+                if window.isMinimized && geometry.metadataWidth >= 178 {
+                    metadataMinimizedBadge
                 }
             }
-            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-
-            if window.isMinimized && geometry.metadataWidth >= 178 {
-                Text("Minimized")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 2)
-                    .background(
-                        Capsule()
-                            .fill(Color.white.opacity(0.08))
-                    )
-                    .layoutPriority(1)
-            }
+            .padding(.horizontal, geometry.isMetadataCompact ? 7 : 9)
+            .padding(.vertical, 7)
+            .frame(width: geometry.metadataWidth, alignment: .leading)
         }
-        .padding(.horizontal, geometry.isMetadataCompact ? 7 : 9)
-        .padding(.vertical, 7)
-        .frame(width: geometry.metadataWidth, alignment: .leading)
-        .background(
-            GlassBackground(
-                cornerRadius: 12,
-                tintOpacity: 0.045,
-                strokeOpacity: 0.06,
-                shadowOpacity: 0.05,
-                shadowRadius: 8,
-                shadowYOffset: 4
-            )
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .clipped()
+    }
+
+    private var metadataMinimizedBadge: some View {
+        NativeLiquidGlassSurface(
+            cornerRadius: 7,
+            nativeStyle: .clear,
+            tintOpacity: 0.018,
+            strokeOpacity: 0.10,
+            shadowOpacity: 0.025,
+            shadowRadius: 4,
+            shadowYOffset: 2
+        ) {
+            Text("Minimized")
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+        }
+        .layoutPriority(1)
     }
 
     private var cardOpacity: Double {
@@ -240,6 +356,25 @@ private struct WindowPreviewSurfaceView: View {
     private var previewBorder: some View {
         RoundedRectangle(cornerRadius: geometry.cornerRadius, style: .continuous)
             .strokeBorder(isSelected ? Color.white.opacity(0.24) : Color.white.opacity(0.075), lineWidth: isSelected ? 1.0 : 0.6)
+    }
+
+    private func statusPill(_ text: String) -> some View {
+        NativeLiquidGlassSurface(
+            cornerRadius: 11,
+            nativeStyle: .regular,
+            tintOpacity: 0.02,
+            strokeOpacity: 0.13,
+            strokeWidth: 0.7,
+            shadowOpacity: 0.05,
+            shadowRadius: 5,
+            shadowYOffset: 2
+        ) {
+            Text(text)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+        }
     }
 }
 
@@ -259,8 +394,15 @@ private struct AdaptivePreviewGeometry: Equatable {
         metadataWidth < 164
     }
 
-    init(window: WindowModel, presentationMode: SwitcherPresentationMode) {
-        let constraints = Constraints(presentationMode: presentationMode)
+    init(
+        window: WindowModel,
+        presentationMode: SwitcherPresentationMode,
+        maximumPreviewWidth: CGFloat? = nil
+    ) {
+        let constraints = Constraints(
+            presentationMode: presentationMode,
+            maximumPreviewWidth: maximumPreviewWidth
+        )
         let sourceSize = Self.sourceSize(for: window)
         let aspect = Self.clampedAspectRatio(for: sourceSize)
         let mass = Self.visualMassBand(for: sourceSize, hasReliableBounds: Self.hasReliableBounds(window.bounds))
@@ -341,7 +483,7 @@ private struct AdaptivePreviewGeometry: Equatable {
         let maximumHeight: CGFloat
         let maximumVisibilityBoost: CGFloat
 
-        init(presentationMode: SwitcherPresentationMode) {
+        init(presentationMode: SwitcherPresentationMode, maximumPreviewWidth: CGFloat?) {
             switch presentationMode {
             case .nativePreview:
                 referenceHeight = 218
@@ -349,7 +491,7 @@ private struct AdaptivePreviewGeometry: Equatable {
                 minimumHeight = 122
                 absoluteMinimumWidth = 118
                 absoluteMinimumHeight = 112
-                maximumWidth = 410
+                maximumWidth = maximumPreviewWidth ?? 410
                 maximumHeight = 246
                 maximumVisibilityBoost = 1.16
             case .workspace:
@@ -358,7 +500,7 @@ private struct AdaptivePreviewGeometry: Equatable {
                 minimumHeight = 128
                 absoluteMinimumWidth = 122
                 absoluteMinimumHeight = 118
-                maximumWidth = 440
+                maximumWidth = maximumPreviewWidth ?? 440
                 maximumHeight = 260
                 maximumVisibilityBoost = 1.18
             }
@@ -371,18 +513,78 @@ private struct WindowPreviewPlaceholder: View {
     let geometry: AdaptivePreviewGeometry
 
     var body: some View {
-        ZStack {
-            Color.white.opacity(0.028)
-
+        NativeLiquidGlassSurface(
+            cornerRadius: geometry.cornerRadius,
+            nativeStyle: .clear,
+            material: .hudWindow,
+            blendingMode: .behindWindow,
+            state: .active,
+            isEmphasized: false,
+            tintColor: .white,
+            tintOpacity: 0.018,
+            strokeOpacity: 0.12,
+            strokeWidth: 0.65,
+            shadowOpacity: 0.10,
+            shadowRadius: 9,
+            shadowYOffset: 5
+        ) {
             VStack(spacing: geometry.visualSize.width < 160 ? 5 : 8) {
                 Image(systemName: isMinimized ? "minus.rectangle" : "macwindow")
                     .font(.system(size: geometry.visualSize.width < 160 ? 20 : 26, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.primary.opacity(0.70))
 
                 Text(isMinimized ? "Minimized" : "Preview")
                     .font(.system(size: geometry.visualSize.width < 160 ? 9 : 10, weight: .medium))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.primary.opacity(0.64))
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+
+private struct WindowlessPreviewSurface: View {
+    let appName: String
+    let appIcon: NSImage
+    let geometry: AdaptivePreviewGeometry
+
+    var body: some View {
+        NativeLiquidGlassSurface(
+            cornerRadius: geometry.cornerRadius,
+            nativeStyle: .clear,
+            material: .hudWindow,
+            blendingMode: .behindWindow,
+            state: .active,
+            isEmphasized: false,
+            tintColor: .white,
+            tintOpacity: 0.016,
+            strokeOpacity: 0.11,
+            strokeWidth: 0.65,
+            shadowOpacity: 0.12,
+            shadowRadius: 12,
+            shadowYOffset: 7
+        ) {
+            VStack(spacing: 9) {
+                Image(nsImage: appIcon)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 34, height: 34)
+                    .cornerRadius(8)
+                    .shadow(color: .black.opacity(0.10), radius: 5, x: 0, y: 2)
+
+                VStack(spacing: 2) {
+                    Text(appName)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.primary.opacity(0.82))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+
+                    Text("No Windows")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: max(72, geometry.visualSize.width - 44))
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }

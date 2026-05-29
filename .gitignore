@@ -1,1 +1,13 @@
-*.build
+.DS_Store
+
+# SwiftPM / Xcode build outputs
+.build/
+.swiftpm/
+DerivedData/
+~/Library/Developer/Xcode/DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Packaged app artifacts
+*.app/
+*.zip

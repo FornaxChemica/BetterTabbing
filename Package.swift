@@ -2,12 +2,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "BetterTabbing",
+    name: "WindowLens",
     platforms: [
         .macOS(.v26)
     ],
     products: [
-        .executable(name: "BetterTabbing", targets: ["BetterTabbing"])
+        .executable(name: "WindowLens", targets: ["BetterTabbing"])
     ],
     targets: [
         .executableTarget(

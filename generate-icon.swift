@@ -154,7 +154,7 @@ if process.terminationStatus == 0 {
     try? fileManager.removeItem(atPath: iconsetPath)
 
     // Copy to app bundle Resources
-    let resourcesPath = "BetterTabbing.app/Contents/Resources"
+    let resourcesPath = "WindowLens.app/Contents/Resources"
     if fileManager.fileExists(atPath: resourcesPath) {
         try? fileManager.copyItem(atPath: "AppIcon.icns", toPath: "\(resourcesPath)/AppIcon.icns")
         print("Copied to \(resourcesPath)/AppIcon.icns")

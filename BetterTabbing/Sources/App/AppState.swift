@@ -7,6 +7,16 @@ enum SwitcherPresentationMode: Equatable {
     case workspace
 }
 
+enum WorkspaceInteractionMode: Equatable {
+    case currentAppWindows
+    case globalWindowSearch
+}
+
+enum WorkspaceSearchScope: Equatable {
+    case currentApp
+    case allWindows
+}
+
 @MainActor
 final class AppState: ObservableObject {
     static let shared = AppState()
@@ -21,9 +31,18 @@ final class AppState: ObservableObject {
     @Published var isSearchActive = false
     @Published var searchQuery = ""
     @Published var selectedSearchIndex = 0  // Index into search results
+    @Published var workspaceMode: WorkspaceInteractionMode = .currentAppWindows
+    @Published var workspaceSearchScope: WorkspaceSearchScope = .allWindows
     @Published var isKeyboardNavigating = false  // When true, ignore mouse hover
     @Published var hasMouseMoved = false  // Whether mouse has actually moved since panel appeared
+    @Published private(set) var hasNativeSelection = false
+    @Published private(set) var nativeSelectedItemFrame: CGRect?
+    private(set) var nativeSelectionGeneration: UInt64 = 0
     var lastMousePosition: CGPoint? = nil  // Track last mouse position to detect actual movement
+    private var nativeTraversalSnapshot: [ApplicationModel]?
+    private var workspaceSessionSnapshot: [ApplicationModel]?
+    private var workspaceFrontmostPID: pid_t?
+    private var latestLiveMRUApplications: [ApplicationModel] = []
 
     // MARK: - Resource Monitor State
 
@@ -80,6 +99,7 @@ final class AppState: ObservableObject {
 
     @Published var preferences = UserPreferences.load() {
         didSet {
+            handleWindowEnumerationPreferenceChange(from: oldValue)
             preferences.save()
         }
     }
@@ -88,7 +108,7 @@ final class AppState: ObservableObject {
 
     /// Search results when searching - includes both apps and specific windows
     var searchResults: [SearchResult] {
-        return FuzzyMatcher.search(applications, query: searchQuery)
+        return FuzzyMatcher.search(searchableApplications, query: searchQuery)
     }
 
     /// Selected search result
@@ -98,18 +118,89 @@ final class AppState: ObservableObject {
     }
 
     var selectedApp: ApplicationModel? {
+        if presentationMode == .nativePreview && !hasNativeSelection {
+            return nil
+        }
+
         // When actively searching with a query, use search results
         if isSearchActive && !searchQuery.isEmpty {
             return selectedSearchResult?.app
         }
         // Otherwise use the app grid
-        guard filteredApplications.indices.contains(selectedAppIndex) else { return nil }
-        return filteredApplications[selectedAppIndex]
+        return appAtSelectedIndex(in: filteredApplications)
+    }
+
+    private var searchableApplications: [ApplicationModel] {
+        guard presentationMode == .workspace,
+              workspaceMode == .globalWindowSearch,
+              workspaceSearchScope == .currentApp,
+              let currentApp = currentWorkspaceApp else {
+            return applications
+        }
+
+        return [currentApp]
+    }
+
+    var currentWorkspaceApp: ApplicationModel? {
+        if let workspaceFrontmostPID,
+           let app = applications.first(where: { $0.pid == workspaceFrontmostPID }) {
+            return app
+        }
+
+        return appAtSelectedIndex(in: applications)
+    }
+
+    private func appAtSelectedIndex(in applications: [ApplicationModel]) -> ApplicationModel? {
+        if applications.indices.contains(selectedAppIndex) {
+            return applications[selectedAppIndex]
+        }
+
+        return applications.first
+    }
+
+    private func handleWindowEnumerationPreferenceChange(from oldPreferences: UserPreferences) {
+        let affectsWindowEnumeration = oldPreferences.showAllSpaces != preferences.showAllSpaces
+            || oldPreferences.showMinimizedWindows != preferences.showMinimizedWindows
+            || oldPreferences.excludedBundleIDs != preferences.excludedBundleIDs
+
+        guard affectsWindowEnumeration else { return }
+
+        WindowCache.shared.invalidate()
+
+        if isVisible, presentationMode == .workspace {
+            let selectedPID = selectedApp?.pid
+            let refreshedApplications = WindowCache.shared.getApplicationsSync(forceRefresh: true)
+            reconcileApplications(
+                refreshedApplications,
+                selectedPID: selectedPID,
+                preserveCurrentSelection: true
+            )
+        } else {
+            WindowCache.shared.prefetchAsync()
+        }
     }
 
     var filteredApplications: [ApplicationModel] {
+        if presentationMode == .workspace,
+           workspaceMode == .currentAppWindows,
+           let currentWorkspaceApp {
+            return [currentWorkspaceApp]
+        }
+
         guard !searchQuery.isEmpty else { return applications }
         return FuzzyMatcher.filter(applications, query: searchQuery)
+    }
+
+    var isNativeTraversalSnapshotActive: Bool {
+        nativeTraversalSnapshot != nil
+    }
+
+    var currentNativePreviewGeneration: UInt64? {
+        isNativeTraversalSnapshotActive ? nativeSelectionGeneration : nil
+    }
+
+    func previewRequestGeneration(for mode: SwitcherPresentationMode) -> UInt64? {
+        mode == .nativePreview ? currentNativePreviewGeneration : nil
     }
 
     func setWindowPreview(_ update: WindowPreviewUpdate) {
@@ -142,36 +233,7 @@ final class AppState: ObservableObject {
     }
 
     private func previewUpdate(_ update: WindowPreviewUpdate, matches window: WindowModel) -> Bool {
-        guard window.windowID == update.windowID else { return false }
-
-        let updateTitle = normalizedPreviewTitle(update.title)
-        let windowTitle = normalizedPreviewTitle(window.title)
-        guard !updateTitle.isEmpty, updateTitle == windowTitle else {
-            return false
-        }
-
-        if hasReliablePreviewBounds(update.bounds), hasReliablePreviewBounds(window.bounds) {
-            return previewBounds(update.bounds, match: window.bounds)
-        }
-
-        return true
-    }
-
-    private func normalizedPreviewTitle(_ title: String) -> String {
-        title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    }
-
-    private func previewBounds(_ lhs: CGRect, match rhs: CGRect) -> Bool {
-        guard hasReliablePreviewBounds(lhs), hasReliablePreviewBounds(rhs) else { return false }
-
-        return abs(lhs.origin.x - rhs.origin.x) <= 2
-            && abs(lhs.origin.y - rhs.origin.y) <= 2
-            && abs(lhs.width - rhs.width) <= 2
-            && abs(lhs.height - rhs.height) <= 2
-    }
-
-    private func hasReliablePreviewBounds(_ bounds: CGRect) -> Bool {
-        bounds.width > 16 && bounds.height > 16
+        window.previewIdentity.matches(update.previewIdentity)
     }
 
     // MARK: - Navigation Methods
@@ -218,6 +280,10 @@ final class AppState: ObservableObject {
         hasMouseMoved = false
         isKeyboardNavigating = false
         lastMousePosition = nil
+        nativeSelectedItemFrame = nil
+        if mode == .nativePreview {
+            hasNativeSelection = false
+        }
 
         if mode == .nativePreview {
             isSearchActive = false
@@ -225,6 +291,272 @@ final class AppState: ObservableObject {
             selectedSearchIndex = 0
             isResourceMonitorActive = false
             stopResourcePolling()
+        }
+    }
+
+    func beginWorkspaceWindowSession(
+        snapshot: [ApplicationModel],
+        frontmostPID: pid_t?,
+        visible: Bool,
+        initialWindowIndex: Int?
+    ) {
+        workspaceSessionSnapshot = snapshot
+        workspaceFrontmostPID = frontmostPID
+        applications = snapshot
+        presentationMode = .workspace
+        workspaceMode = .currentAppWindows
+        workspaceSearchScope = .allWindows
+        isSearchActive = false
+        searchQuery = ""
+        selectedSearchIndex = 0
+        isResourceMonitorActive = false
+        stopResourcePolling()
+
+        if visible {
+            prepareForPresentation(.workspace)
+        } else {
+            isVisible = false
+        }
+
+        if let frontmostPID,
+           let appIndex = filteredApplications.firstIndex(where: { $0.pid == frontmostPID }) {
+            selectedAppIndex = appIndex
+        } else {
+            selectedAppIndex = 0
+        }
+
+        if let selectedApp,
+           let initialWindowIndex,
+           selectedApp.windows.indices.contains(initialWindowIndex),
+           !selectedApp.windows[initialWindowIndex].isWindowlessPlaceholder {
+            selectedWindowIndex = initialWindowIndex
+        } else if let selectedApp,
+                  let firstRealWindowIndex = selectedApp.windows.indices.first(where: { !selectedApp.windows[$0].isWindowlessPlaceholder }) {
+            selectedWindowIndex = firstRealWindowIndex
+        } else {
+            selectedWindowIndex = 0
+        }
+    }
+
+    func pinWorkspaceSearch() {
+        workspaceMode = .globalWindowSearch
+        workspaceSearchScope = .allWindows
+        isSearchActive = true
+        searchQuery = ""
+        selectedSearchIndex = 0
+        isVisible = true
+    }
+
+    func setWorkspaceSearchScope(_ scope: WorkspaceSearchScope) {
+        workspaceSearchScope = scope
+        selectedSearchIndex = 0
+    }
+
+    func beginNativePreviewSession(_ snapshot: [ApplicationModel]) {
+        advanceNativeSelectionGeneration(clearAnchor: true)
+        latestLiveMRUApplications = snapshot
+        nativeTraversalSnapshot = snapshot
+        applications = snapshot
+        prepareForPresentation(.nativePreview)
+        selectedAppIndex = 0
+        selectedWindowIndex = 0
+    }
+
+    func beginNativeTraversalSnapshot(_ snapshot: [ApplicationModel], reverse: Bool) {
+        advanceNativeSelectionGeneration(clearAnchor: true)
+        latestLiveMRUApplications = snapshot
+        nativeTraversalSnapshot = snapshot
+        applications = snapshot
+        prepareForPresentation(.nativePreview)
+
+        if snapshot.isEmpty {
+            selectedAppIndex = 0
+        } else if reverse {
+            selectedAppIndex = max(snapshot.count - 1, 0)
+        } else {
+            selectedAppIndex = snapshot.count > 1 ? 1 : 0
+        }
+        selectedWindowIndex = 0
+    }
+
+    func endNativeTraversalSnapshot() {
+        advanceNativeSelectionGeneration(clearAnchor: true)
+        nativeTraversalSnapshot = nil
+        nativeSelectedItemFrame = nil
+    }
+
+    @discardableResult
+    func selectNativeApplication(
+        pid: pid_t?,
+        bundleIdentifier: String?,
+        title: String?,
+        anchorFrame: CGRect?,
+        resolvedApplication: ApplicationModel? = nil
+    ) -> Bool {
+        advanceNativeSelectionGeneration(clearAnchor: false)
+        if let resolvedApplication {
+            upsertNativeApplication(resolvedApplication)
+        }
+
+        guard let index = indexOfApplication(pid: pid, bundleIdentifier: bundleIdentifier, title: title) else {
+            print("[AppState] Could not resolve native Cmd+Tab selection pid=\(pid.map(String.init) ?? "unknown") bundle=\(bundleIdentifier ?? "unknown") title=\(title ?? "unknown")")
+            return false
+        }
+
+        if let anchorFrame, anchorFrame.width > 1, anchorFrame.height > 1 {
+            nativeSelectedItemFrame = normalizedNativeAnchorFrame(anchorFrame)
+        } else if nativeSelectedItemFrame == nil {
+            nativeSelectedItemFrame = nil
+        }
+
+        let previousSelectedAppPID = selectedApp?.pid
+        selectedAppIndex = index
+        hasNativeSelection = true
+        if previousSelectedAppPID != selectedApp?.pid {
+            selectedWindowIndex = 0
+        }
+        return true
+    }
+
+    func selectedNativeWindowSelection() -> (app: ApplicationModel, window: WindowModel, index: Int)? {
+        guard presentationMode == .nativePreview,
+              let app = selectedApp,
+              app.windows.indices.contains(selectedWindowIndex) else {
+            return nil
+        }
+
+        return (app, app.windows[selectedWindowIndex], selectedWindowIndex)
+    }
+
+    private func advanceNativeSelectionGeneration(clearAnchor: Bool) {
+        nativeSelectionGeneration &+= 1
+        if clearAnchor {
+            nativeSelectedItemFrame = nil
+        }
+    }
+
+    private func upsertNativeApplication(_ app: ApplicationModel) {
+        if let index = applications.firstIndex(where: { $0.pid == app.pid || $0.bundleIdentifier == app.bundleIdentifier }) {
+            applications[index] = app
+        } else {
+            applications.append(app)
+        }
+        nativeTraversalSnapshot = applications
+    }
+
+    private func normalizedNativeAnchorFrame(_ frame: CGRect) -> CGRect {
+        let candidates = nativeAnchorCandidates(for: frame)
+        guard let bestCandidate = candidates.min(by: { lhs, rhs in lhs.score < rhs.score }) else {
+            return frame
+        }
+
+        return bestCandidate.frame
+    }
+
+    private func nativeAnchorCandidates(for frame: CGRect) -> [(frame: CGRect, score: CGFloat)] {
+        var candidates: [(CGRect, CGFloat)] = []
+
+        for screen in NSScreen.screens {
+            let rawScore = nativeAnchorScore(frame, on: screen)
+            if rawScore < .greatestFiniteMagnitude {
+                candidates.append((frame, rawScore))
+            }
+
+            let flippedFrame = CGRect(
+                x: frame.origin.x,
+                y: screen.frame.maxY - (frame.origin.y - screen.frame.minY) - frame.height,
+                width: frame.width,
+                height: frame.height
+            )
+            let flippedScore = nativeAnchorScore(flippedFrame, on: screen)
+            if flippedScore < .greatestFiniteMagnitude {
+                candidates.append((flippedFrame, flippedScore))
+            }
+        }
+
+        return candidates
+    }
+
+    private func nativeAnchorScore(_ frame: CGRect, on screen: NSScreen) -> CGFloat {
+        guard frame.width > 1, frame.height > 1 else { return .greatestFiniteMagnitude }
+
+        let center = CGPoint(x: frame.midX, y: frame.midY)
+        guard screen.frame.contains(center) else { return .greatestFiniteMagnitude }
+
+        let normalizedHorizontalDistance = abs(center.x - screen.frame.midX) / max(screen.frame.width, 1)
+        let normalizedVerticalDistance = abs(center.y - screen.frame.midY) / max(screen.frame.height, 1)
+        return normalizedHorizontalDistance + normalizedVerticalDistance
+    }
+
+    private func indexOfApplication(pid: pid_t?, bundleIdentifier: String?, title: String?) -> Int? {
+        if let pid, let index = filteredApplications.firstIndex(where: { $0.pid == pid }) {
+            return index
+        }
+
+        if let bundleIdentifier,
+           let index = filteredApplications.firstIndex(where: { $0.bundleIdentifier == bundleIdentifier }) {
+            return index
+        }
+
+        guard let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty else {
+            return nil
+        }
+
+        let normalizedTitle = normalizedPreviewTitle(title)
+        if let index = filteredApplications.firstIndex(where: { normalizedPreviewTitle($0.name) == normalizedTitle }) {
+            return index
+        }
+
+        return filteredApplications.firstIndex { app in
+            let appName = normalizedPreviewTitle(app.name)
+            return !appName.isEmpty && (normalizedTitle.contains(appName) || appName.contains(normalizedTitle))
+        }
+    }
+
+    private func normalizedPreviewTitle(_ title: String) -> String {
+        PreviewIdentity.normalizedTitle(title)
+    }
+
+    func reconcileApplications(
+        _ newApplications: [ApplicationModel],
+        selectedPID: pid_t?,
+        preserveCurrentSelection: Bool = false
+    ) {
+        latestLiveMRUApplications = newApplications
+
+        guard !isNativeTraversalSnapshotActive else {
+            print("[AppState] Ignored live MRU reorder while native Cmd+Tab snapshot is frozen")
+            return
+        }
+
+        if presentationMode == .workspace, workspaceSessionSnapshot != nil {
+            print("[AppState] Ignored live MRU reorder while WindowLens workspace snapshot is frozen")
+            return
+        }
+
+        let previousSelectedPID = selectedApp?.pid
+        let targetPID = preserveCurrentSelection ? previousSelectedPID : selectedPID
+        let previousWindowIndex = selectedWindowIndex
+
+        applications = newApplications
+
+        if let targetPID,
+           let targetIndex = filteredApplications.firstIndex(where: { $0.pid == targetPID }) {
+            selectedAppIndex = targetIndex
+        } else {
+            selectedAppIndex = min(selectedAppIndex, max(filteredApplications.count - 1, 0))
+        }
+
+        if preserveCurrentSelection,
+           let selectedApp,
+           selectedApp.windows.indices.contains(previousWindowIndex) {
+            selectedWindowIndex = previousWindowIndex
+        } else {
+            selectedWindowIndex = 0
+        }
+
+        if isSearchActive && !searchQuery.isEmpty {
+            selectedSearchIndex = min(selectedSearchIndex, max(searchResults.count - 1, 0))
         }
     }
 
@@ -242,6 +574,10 @@ final class AppState: ObservableObject {
         } else {
             let count = filteredApplications.count
             guard count > 0 else { return }
+            if isNativeTraversalSnapshotActive {
+                advanceNativeSelectionGeneration(clearAnchor: false)
+                hasNativeSelection = true
+            }
             selectedAppIndex = (selectedAppIndex + 1) % count
             selectedWindowIndex = 0
         }
@@ -261,6 +597,10 @@ final class AppState: ObservableObject {
         } else {
             let count = filteredApplications.count
             guard count > 0 else { return }
+            if isNativeTraversalSnapshotActive {
+                advanceNativeSelectionGeneration(clearAnchor: false)
+                hasNativeSelection = true
+            }
             selectedAppIndex = (selectedAppIndex - 1 + count) % count
             selectedWindowIndex = 0
         }
@@ -269,17 +609,35 @@ final class AppState: ObservableObject {
     func selectNextWindow() {
         markKeyboardNavigation()
         guard let app = selectedApp else { return }
-        let count = app.windows.count
+        let indices = selectableWindowIndices(in: app)
+        let count = indices.count
         guard count > 0 else { return }
-        selectedWindowIndex = (selectedWindowIndex + 1) % count
+        guard let currentPosition = indices.firstIndex(of: selectedWindowIndex) else {
+            selectedWindowIndex = indices[0]
+            return
+        }
+        selectedWindowIndex = indices[(currentPosition + 1) % count]
     }
 
     func selectPreviousWindow() {
         markKeyboardNavigation()
         guard let app = selectedApp else { return }
-        let count = app.windows.count
+        let indices = selectableWindowIndices(in: app)
+        let count = indices.count
         guard count > 0 else { return }
-        selectedWindowIndex = (selectedWindowIndex - 1 + count) % count
+        guard let currentPosition = indices.firstIndex(of: selectedWindowIndex) else {
+            selectedWindowIndex = indices[0]
+            return
+        }
+        selectedWindowIndex = indices[(currentPosition - 1 + count) % count]
+    }
+
+    private func selectableWindowIndices(in app: ApplicationModel) -> [Int] {
+        let realWindowIndices = app.windows.indices.filter { !app.windows[$0].isWindowlessPlaceholder }
+        if !realWindowIndices.isEmpty {
+            return realWindowIndices
+        }
+        return Array(app.windows.indices)
     }
 
     /// Move selection to the row above in the grid
@@ -292,6 +650,10 @@ final class AppState: ObservableObject {
         let newIndex = selectedAppIndex - itemsPerRow
 
         if newIndex >= 0 {
+            if isNativeTraversalSnapshotActive {
+                advanceNativeSelectionGeneration(clearAnchor: false)
+                hasNativeSelection = true
+            }
             selectedAppIndex = newIndex
             selectedWindowIndex = 0
         }
@@ -307,11 +669,19 @@ final class AppState: ObservableObject {
         let newIndex = selectedAppIndex + itemsPerRow
 
         if newIndex < count {
+            if isNativeTraversalSnapshotActive {
+                advanceNativeSelectionGeneration(clearAnchor: false)
+                hasNativeSelection = true
+            }
             selectedAppIndex = newIndex
             selectedWindowIndex = 0
         } else {
             let lastIndex = count - 1
             if selectedAppIndex != lastIndex {
+                if isNativeTraversalSnapshotActive {
+                    advanceNativeSelectionGeneration(clearAnchor: false)
+                    hasNativeSelection = true
+                }
                 selectedAppIndex = lastIndex
                 selectedWindowIndex = 0
             }
@@ -602,8 +972,15 @@ final class AppState: ObservableObject {
         cancelEHold(triggeredAI: false)
         cancelQuitHold()
         stopResourcePolling()
+        advanceNativeSelectionGeneration(clearAnchor: true)
         isVisible = false
         presentationMode = .workspace
+        nativeTraversalSnapshot = nil
+        workspaceSessionSnapshot = nil
+        workspaceFrontmostPID = nil
+        workspaceMode = .currentAppWindows
+        workspaceSearchScope = .allWindows
+        hasNativeSelection = false
         selectedAppIndex = 0
         selectedWindowIndex = 0
         selectedSearchIndex = 0

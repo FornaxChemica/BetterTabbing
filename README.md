@@ -1,146 +1,79 @@
-<p align="center">
-  <img src="assets/icon.png" alt="BetterTabbing Icon" width="128" height="128">
-</p>
+# WindowLens
 
-<h1 align="center">✨ BetterTabbing</h1>
+WindowLens is an open-source macOS window switcher and native Cmd-Tab preview enhancer.
 
-<p align="center">
-  <strong>⚡ A fast, keyboard-driven CMD+TAB replacement for macOS with window-level switching and fuzzy search.</strong>
-</p>
+Cmd-Tab remains the system app switcher owned by macOS and the Dock. WindowLens observes native Cmd-Tab selection and adds preview surfaces without replacing native switching behavior. Option-Tab opens the WindowLens workspace mode for focused window and workspace navigation.
 
-<p align="center">
-  <img src="assets/better-tab-demo.gif" alt="BetterTabbing Demo" width="600">
-</p>
+## Current Features
 
----
+- Native Cmd-Tab preview enhancement driven by the Dock accessibility switcher selection.
+- Window previews captured with ScreenCaptureKit.
+- Cache-first preview rendering for minimized and off-Space windows.
+- Polished placeholders when a live or cached thumbnail is unavailable.
+- Liquid Glass interface on macOS 26.
+- Option-Tab workspace mode for window-focused navigation.
+- Window-level selection within the active workspace surface.
+- Search-ready architecture for apps and windows.
 
-## 🚀 Features
+## Roadmap
 
-- 🪟 **Window-level switching** — Switch to specific windows, not just apps
-- 🔍 **Fuzzy search** — Type to filter apps and windows instantly
-- ⚡ **Quick switch** — Fast CMD+TAB style switching without UI delay
-- 💎 **Liquid Glass UI** — Native macOS 26 glass effect
-- ⌨️ **Configurable shortcut** — Use ⌥TAB (default) or replace system ⌘TAB
+- Current-app window switching.
+- Global window search.
+- More reliable restore paths for minimized and off-Space windows.
+- Project-aware results for editors and development workflows.
+- Workspace traversal across Spaces and Stage Manager contexts.
 
-## 📦 Installation
+## Requirements
 
-### 💾 Download
-Grab the latest release from [Releases](https://github.com/user/BetterTabbing/releases).
+- macOS 26 or newer.
+- Swift 6.2 or newer.
+- Accessibility permission for window inspection and activation.
+- Input Monitoring permission for global shortcuts.
+- Screen Recording permission for window previews.
 
-### 🔨 Build from source
+Grant permissions in System Settings -> Privacy & Security.
+
+## Build From Source
+
 ```bash
-git clone https://github.com/user/BetterTabbing.git
-cd BetterTabbing
+git clone https://github.com/user/WindowLens.git
+cd WindowLens
 ./build-app.sh
 ```
 
-### 🔐 Permissions
-BetterTabbing requires:
-- ♿ **Accessibility** — For window management and switching
-- ⌨️ **Input Monitoring** — For global keyboard shortcuts
+During development, you can also build and run from Xcode.
 
-Grant these in **System Settings → Privacy & Security**.
+## Interaction Model
 
-## ⌨️ Usage
+| Shortcut | Behavior |
+| --- | --- |
+| Cmd-Tab | Native macOS app switching, enhanced with WindowLens previews |
+| Quick Option-Tab | Switch to the next window of the current app |
+| Hold Option-Tab | Show the current-app window carousel |
+| Tab / Shift-Tab | Cycle current-app windows while the carousel is open |
+| Space or / | Pin the overlay and open global window search |
+| Cmd-1 | Scope pinned search to the current app |
+| Cmd-2 | Scope pinned search to all windows |
+| Return | Open the selected search result or confirm selection |
+| Escape | Dismiss the WindowLens overlay |
 
-| Shortcut | Action |
-|----------|--------|
-| ⌥TAB | 🎯 Open switcher (or ⌘TAB if configured) |
-| TAB | ⬇️ Next app |
-| ⇧TAB | ⬆️ Previous app |
-| ` | ➡️ Next window in selected app |
-| ⇧` | ⬅️ Previous window |
-| Return | 🔍 Activate search |
-| Escape | ❌ Dismiss |
-| Release modifier | ✅ Confirm selection |
+## Architecture Notes
 
-## 🏗️ Architecture
+WindowLens intentionally separates two interaction systems:
 
-```
-BetterTabbing/
-├── Sources/
-│   ├── App/
-│   │   ├── BetterTabbingApp.swift    # Entry point, MenuBarExtra
-│   │   ├── AppDelegate.swift         # Event handling, window management
-│   │   └── AppState.swift            # Observable state
-│   │
-│   ├── Core/
-│   │   ├── EventTap/
-│   │   │   ├── KeyboardEventTap.swift    # CGEventTap for global shortcuts
-│   │   │   └── ModifierKeyTracker.swift  # Modifier key state
-│   │   ├── WindowManagement/
-│   │   │   ├── WindowEnumerator.swift    # CGWindowList enumeration
-│   │   │   └── WindowCache.swift         # Lock-free caching layer
-│   │   ├── Accessibility/
-│   │   │   └── AXWindowHelper.swift      # AXUIElement window operations
-│   │   └── Permissions/
-│   │       └── PermissionManager.swift   # Permission checks
-│   │
-│   ├── Services/
-│   │   ├── WindowSwitcher.swift      # Window activation via AX API
-│   │   └── FuzzyMatcher.swift        # Search scoring
-│   │
-│   ├── Models/
-│   │   ├── ApplicationModel.swift    # App representation
-│   │   ├── WindowModel.swift         # Window representation
-│   │   └── UserPreferences.swift     # Settings persistence
-│   │
-│   └── UI/
-│       ├── SwitcherWindow/
-│       │   ├── SwitcherPanel.swift       # NSPanel overlay
-│       │   ├── SwitcherView.swift        # Main SwiftUI view
-│       │   ├── AppGridView.swift         # App icon grid
-│       │   ├── WindowListView.swift      # Window list
-│       │   └── SearchResultsListView.swift
-│       └── Components/
-│           ├── GlassBackground.swift     # macOS glass effect
-│           ├── AppTileView.swift         # Individual app tile
-│           └── WindowRowView.swift       # Window row
-```
+- Native Cmd-Tab augmentation: passive, Dock-authoritative, preview-focused.
+- WindowLens workspace mode: active, keyboard-focused, window/workspace-oriented.
 
-### Key Components
+The native Cmd-Tab path should not consume or replace Cmd-Tab. The Dock remains responsible for app traversal and activation.
 
-**KeyboardEventTap** — Intercepts global keyboard events via `CGEvent.tapCreate()`. Handles modifier tracking, quick-switch detection (< 120ms), and shortcut dispatch.
+## Attribution
 
-**WindowCache** — Lock-free read path for UI responsiveness. Background prefetch on activation. In-place reordering after switch for accurate MRU order.
+WindowLens started as a fork of BetterTabbing by Sid Premkumar and has been significantly extended and reworked by Chakshu Jain.
 
-**WindowEnumerator** — Uses `CGWindowListCopyWindowInfo` for fast enumeration, enriched with AXUIElement titles via parallel fetching.
+The project is inspired by BetterTabbing and by high-level DockDoor concepts around native macOS preview augmentation. DockDoor code and assets are not copied or vendored; GPL-licensed material should not be incorporated unless this project's license is changed accordingly.
 
-**SwitcherPanel** — `NSPanel` subclass with `.nonactivatingPanel` style. Appears on all spaces, doesn't steal focus during keyboard navigation.
+See [ACKNOWLEDGMENTS.md](ACKNOWLEDGMENTS.md) for more detail.
 
-**FuzzyMatcher** — Scores matches by consecutive character bonuses. Returns `SearchResult` objects that can target specific windows.
+## License
 
-### Data Flow
-
-```
-KeyboardEventTap
-      │
-      ▼ (Combine PassthroughSubject)
-AppDelegate.handleShortcutEvent()
-      │
-      ├─► WindowCache.prefetchAsync()     (background)
-      │
-      └─► SwitcherPanel.showWithCachedData()
-                │
-                ▼
-          AppState (ObservableObject)
-                │
-                ▼
-          SwitcherView (SwiftUI)
-```
-
-### ⚡ Performance
-
-- ⚡ **< 50ms** window enumeration (parallel AX fetching)
-- 🔓 **Lock-free reads** from cache during UI updates
-- ⏱️ **120ms quick-switch threshold** — releases before timer = no UI
-- 🚀 **Instant hide** — no animations on dismiss
-
-## 📋 Requirements
-
-- 🍎 macOS 26+
-- 🦉 Swift 5.9+
-
-## 📄 License
-
-MIT
+WindowLens is distributed under the MIT License. See [LICENSE](LICENSE).

@@ -11,6 +11,31 @@ final class AXWindowHelper {
         let axElement: AXUIElement
     }
 
+    struct FocusedWindowSnapshot {
+        let windowID: CGWindowID
+        let title: String
+        let bounds: CGRect
+        let hasReliableWindowID: Bool
+    }
+
+    static func focusedWindowSnapshot(for pid: pid_t) -> FocusedWindowSnapshot? {
+        let axApp = AXUIElementCreateApplication(pid)
+        let focusedWindow = copyWindowAttribute(kAXFocusedWindowAttribute, from: axApp)
+            ?? copyWindowAttribute(kAXMainWindowAttribute, from: axApp)
+        guard let focusedWindow else { return nil }
+
+        var windowID: CGWindowID = 0
+        let idResult = _AXUIElementGetWindow(focusedWindow, &windowID)
+        let hasReliableWindowID = idResult == .success && windowID != 0
+
+        return FocusedWindowSnapshot(
+            windowID: windowID,
+            title: getWindowTitle(for: focusedWindow) ?? "",
+            bounds: getWindowBounds(for: focusedWindow),
+            hasReliableWindowID: hasReliableWindowID
+        )
+    }
+
     /// Get window titles for a given process ID using Accessibility API
     /// Returns both titles mapped by CGWindowID and a list of AX elements for windows we couldn't map
     static func getWindowTitles(for pid: pid_t) -> [CGWindowID: String] {
@@ -76,6 +101,39 @@ final class AXWindowHelper {
         }
 
         return nil
+    }
+
+    private static func copyWindowAttribute(_ attribute: String, from axApp: AXUIElement) -> AXUIElement? {
+        var valueRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, attribute as CFString, &valueRef) == .success else {
+            return nil
+        }
+        return valueRef as! AXUIElement?
+    }
+
+    private static func getWindowBounds(for axWindow: AXUIElement) -> CGRect {
+        var position = CGPoint.zero
+        var size = CGSize.zero
+
+        var positionRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(axWindow, kAXPositionAttribute as CFString, &positionRef) == .success,
+           let positionRef {
+            let positionValue = positionRef as! AXValue
+            if AXValueGetType(positionValue) == .cgPoint {
+                AXValueGetValue(positionValue, .cgPoint, &position)
+            }
+        }
+
+        var sizeRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(axWindow, kAXSizeAttribute as CFString, &sizeRef) == .success,
+           let sizeRef {
+            let sizeValue = sizeRef as! AXValue
+            if AXValueGetType(sizeValue) == .cgSize {
+                AXValueGetValue(sizeValue, .cgSize, &size)
+            }
+        }
+
+        return CGRect(origin: position, size: size)
     }
 
     /// Get the AXUIElement for a specific window by CGWindowID

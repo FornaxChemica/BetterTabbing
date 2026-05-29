@@ -3,6 +3,7 @@ import Carbon.HIToolbox
 import Combine
 import CoreGraphics
 import Foundation
+import IOKit.hid
 
 enum ShortcutEvent {
     case activationStarted   // Modifier+Tab pressed - start timer, don't show UI yet
@@ -12,13 +13,16 @@ enum ShortcutEvent {
     case cycleWindowNext
     case cycleWindowPrevious
     case activateSearch
+    case pinWorkspaceSearch
+    case workspaceSearchScopeCurrentApp
+    case workspaceSearchScopeAllWindows
     case confirm
     case dismiss
     case navigateUp      // Arrow up in search mode
     case navigateDown    // Arrow down in search mode
     case navigateRowUp   // Arrow up in workspace mode - previous window surface
     case navigateRowDown // Arrow down in workspace mode - next window surface
-    case quickSwitch     // Quick CMD+TAB to previous app (no UI)
+    case quickSwitch     // Quick Option+Tab current-app window switch (no UI)
     case quitHoldStarted   // Q key held down - start quit progress
     case quitHoldCancelled // Q key released - cancel quit
     case toggleResourceMonitor // E key tap - toggle mini activity monitor
@@ -26,9 +30,11 @@ enum ShortcutEvent {
     case aiInsightRequested    // E key held - start ollama + query
     case aiInsightCancelled    // E key released after hold
     case toggleProcessGrouping // F key tap - toggle process grouping in monitor
-    case nativeSwitchStarted   // Passive Cmd+Tab observation - never consumes Dock-owned events
+    case nativeSwitchStarted(reverse: Bool)   // Passive Cmd+Tab observation - never consumes Dock-owned events
     case nativeSwitchCycleNext
     case nativeSwitchCyclePrevious
+    case nativeSwitchWindowNext
+    case nativeSwitchWindowPrevious
     case nativeSwitchEnded
 }
 
@@ -58,6 +64,8 @@ final class KeyboardEventTap {
     private var searchModeActive = false  // When true, don't auto-confirm on modifier release
     private var nativeCommandTabSessionActive = false
     private var callbackCount = 0
+    private var hasLoggedFirstCallback = false
+    private var hasLoggedMissingInputMonitoringForHealth = false
 
     private struct ActivationShortcut {
         let name: String
@@ -67,8 +75,8 @@ final class KeyboardEventTap {
         let showsImmediately: Bool
     }
 
-    // Temporary diagnostics while validating event delivery and shortcut matching.
-    private let isKeyboardDebugLoggingEnabled = true
+    // Keep disabled by default. Printing from a CGEventTap callback can cause timeouts.
+    private let isKeyboardDebugLoggingEnabled = false
     private let debugActivationShortcut = ActivationShortcut(
         name: "Control+Shift+Space",
         keyCode: UInt16(kVK_Space),
@@ -119,13 +127,19 @@ final class KeyboardEventTap {
 
     func logStartupDiagnostics(context: String) {
         print("[KeyboardEventTap][\(context)] AXIsProcessTrusted=\(AXIsProcessTrusted())")
-        print("[KeyboardEventTap][\(context)] CGPreflightListenEventAccess=\(CGPreflightListenEventAccess())")
+        print("[KeyboardEventTap][\(context)] IOHIDCheckAccess.listenEvent=\(hasInputMonitoringAccess())")
+        print("[KeyboardEventTap][\(context)] CGPreflightScreenCaptureAccess=\(CGPreflightScreenCaptureAccess())")
         print("[KeyboardEventTap][\(context)] bundleID=\(Bundle.main.bundleIdentifier ?? "unknown")")
         logTapState(context: context)
     }
 
     func scheduleInstall(reason: String, delay: TimeInterval = 1.0) {
         installRetryWorkItem?.cancel()
+        guard hasInputMonitoringAccess() else {
+            print("[KeyboardEventTap] Install not scheduled: Input Monitoring is not granted reason=\(reason)")
+            return
+        }
+
         print("[KeyboardEventTap] Scheduling install in \(String(format: "%.1f", delay))s reason=\(reason)")
 
         let workItem = DispatchWorkItem { [weak self] in
@@ -144,6 +158,12 @@ final class KeyboardEventTap {
 
     @discardableResult
     func installIfNeeded(reason: String = "manual") -> Bool {
+        guard hasInputMonitoringAccess() else {
+            print("[KeyboardEventTap] Event tap install skipped: Input Monitoring is not granted reason=\(reason)")
+            logTapState(context: "install skipped \(reason)")
+            return false
+        }
+
         if let tap = eventTap {
             if runLoopSource == nil {
                 print("[KeyboardEventTap] Event tap exists without run loop source; rebuilding")
@@ -155,6 +175,7 @@ final class KeyboardEventTap {
             print("[KeyboardEventTap] Event tap already exists reason=\(reason) enabled=\(isEnabled)")
             if !isEnabled {
                 print("[KeyboardEventTap] Existing tap disabled; re-enabling")
+                resetShortcutState(reason: "re-enabling existing tap")
                 CGEvent.tapEnable(tap: tap, enable: true)
                 logTapState(context: "installIfNeeded re-enable")
             }
@@ -165,6 +186,16 @@ final class KeyboardEventTap {
     }
 
     func verifyOrRebuild(reason: String) {
+        guard hasInputMonitoringAccess() else {
+            if reason != "periodic" || !hasLoggedMissingInputMonitoringForHealth {
+                print("[KeyboardEventTap] Health check skipped install: Input Monitoring is not granted reason=\(reason)")
+                logStartupDiagnostics(context: "health skipped \(reason)")
+                hasLoggedMissingInputMonitoringForHealth = true
+            }
+            return
+        }
+
+        hasLoggedMissingInputMonitoringForHealth = false
         print("[KeyboardEventTap] Health check reason=\(reason)")
         logStartupDiagnostics(context: "health \(reason)")
 
@@ -186,6 +217,7 @@ final class KeyboardEventTap {
         }
 
         print("[KeyboardEventTap] Health check found disabled tap; re-enabling")
+        resetShortcutState(reason: "health re-enable disabled tap")
         CGEvent.tapEnable(tap: tap, enable: true)
 
         if CGEvent.tapIsEnabled(tap: tap) {
@@ -207,8 +239,15 @@ final class KeyboardEventTap {
         print("[KeyboardEventTap] Disabled")
     }
 
+    func suspend(reason: String) {
+        installRetryWorkItem?.cancel()
+        installRetryWorkItem = nil
+        tearDownEventTap(reason: "suspend \(reason)")
+    }
+
     private func tearDownEventTap(reason: String) {
         print("[KeyboardEventTap] Tearing down event tap reason=\(reason)")
+        resetShortcutState(reason: "tearDown \(reason)")
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
         }
@@ -222,16 +261,21 @@ final class KeyboardEventTap {
     func setSwitcherVisible(_ visible: Bool) {
         switcherVisible = visible
         if !visible {
-            searchModeActive = false  // Reset search mode when switcher hides
-            hadInteractionSinceActivation = false
-            pendingActivation = false
-            isHoldingQuit = false
-            isHoldingE = false
-            nativeCommandTabSessionActive = false
-            activeActivationShortcut = nil
-            showSwitcherTimer?.cancel()
-            showSwitcherTimer = nil
+            resetShortcutState(reason: "switcher hidden")
         }
+    }
+
+    func resetShortcutState(reason: String) {
+        showSwitcherTimer?.cancel()
+        showSwitcherTimer = nil
+        pendingActivation = false
+        activeActivationShortcut = nil
+        switcherVisible = false
+        searchModeActive = false
+        hadInteractionSinceActivation = false
+        isHoldingQuit = false
+        isHoldingE = false
+        print("[KeyboardEventTap] Shortcut state reset reason=\(reason)")
     }
 
     func setSearchModeActive(_ active: Bool) {
@@ -260,15 +304,22 @@ final class KeyboardEventTap {
         )
     }
 
-    private func matchingActivationShortcut(for keyCode: UInt16) -> ActivationShortcut? {
+    private func shortcut(_ shortcut: ActivationShortcut, isPressedIn flags: CGEventFlags?) -> Bool {
+        if let flags {
+            return shortcut.modifiers.allSatisfy { flags.contains($0.cgFlag) }
+        }
+        return modifierTracker.contains(shortcut.modifiers)
+    }
+
+    private func matchingActivationShortcut(for keyCode: UInt16, flags: CGEventFlags? = nil) -> ActivationShortcut? {
         if keyCode == debugActivationShortcut.keyCode,
-           modifierTracker.contains(debugActivationShortcut.modifiers) {
+           shortcut(debugActivationShortcut, isPressedIn: flags) {
             return debugActivationShortcut
         }
 
         let configuredShortcut = configuredActivationShortcut
         if keyCode == configuredShortcut.keyCode,
-           modifierTracker.contains(configuredShortcut.modifiers) {
+           shortcut(configuredShortcut, isPressedIn: flags) {
             if configuredShortcut.modifiers.contains(.command) && !isCommandTabHandlingEnabled {
                 return nil
             }
@@ -278,14 +329,14 @@ final class KeyboardEventTap {
         return nil
     }
 
-    private func activeShortcutMatches(keyCode: UInt16) -> ActivationShortcut? {
+    private func activeShortcutMatches(keyCode: UInt16, flags: CGEventFlags? = nil) -> ActivationShortcut? {
         if let activeActivationShortcut,
            keyCode == activeActivationShortcut.keyCode,
-           modifierTracker.contains(activeActivationShortcut.modifiers) {
+           shortcut(activeActivationShortcut, isPressedIn: flags) {
             return activeActivationShortcut
         }
 
-        return matchingActivationShortcut(for: keyCode)
+        return matchingActivationShortcut(for: keyCode, flags: flags)
     }
 
     private func wasActiveActivationModifierReleased(oldFlags: CGEventFlags, newFlags: CGEventFlags) -> Bool {
@@ -297,6 +348,11 @@ final class KeyboardEventTap {
 
     private func createEventTap(reason: String) -> Bool {
         logStartupDiagnostics(context: "pre-create \(reason)")
+        guard hasInputMonitoringAccess() else {
+            print("[KeyboardEventTap] CGEventTap creation skipped: Input Monitoring is not granted reason=\(reason)")
+            return false
+        }
+
         print("[KeyboardEventTap] Creating CGEventTap reason=\(reason) tap=.cgSessionEventTap place=.headInsertEventTap options=.defaultTap")
 
         // Events to monitor: key down, key up, flags changed (modifiers)
@@ -316,7 +372,6 @@ final class KeyboardEventTap {
             options: .defaultTap,
             eventsOfInterest: eventMask,
             callback: { proxy, type, event, userInfo in
-                print("[KeyboardEventTap] Callback invoked type=\(type.rawValue)")
                 guard let userInfo = userInfo else {
                     return Unmanaged.passUnretained(event)
                 }
@@ -325,7 +380,7 @@ final class KeyboardEventTap {
             },
             userInfo: userInfo
         ) else {
-            print("[KeyboardEventTap] CGEventTap creation FAILED. AXTrusted=\(AXIsProcessTrusted()) inputMonitoring=\(CGPreflightListenEventAccess())")
+            print("[KeyboardEventTap] CGEventTap creation FAILED. AXTrusted=\(AXIsProcessTrusted()) inputMonitoring=\(hasInputMonitoringAccess())")
             return false
         }
         print("[KeyboardEventTap] CGEventTap creation succeeded")
@@ -341,7 +396,8 @@ final class KeyboardEventTap {
         print("[KeyboardEventTap] RunLoop source created; adding to main run loop common modes")
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
-        print("[KeyboardEventTap] CGEventTap enabled")
+        print("[KeyboardEventTap] CGEventTap enabled=\(CGEvent.tapIsEnabled(tap: tap))")
+        hasLoggedFirstCallback = false
 
         logTapState(context: "post-create \(reason)")
         print("[KeyboardEventTap] Successfully created and enabled; test shortcut: \(debugActivationShortcut.name)")
@@ -349,11 +405,17 @@ final class KeyboardEventTap {
     }
 
     private func rebuildEventTap(reason: String) {
+        resetShortcutState(reason: "rebuild \(reason)")
         tearDownEventTap(reason: "rebuild \(reason)")
         _ = createEventTap(reason: "rebuild \(reason)")
     }
 
     private func scheduleRetry(afterFailureReason reason: String) {
+        guard hasInputMonitoringAccess() else {
+            print("[KeyboardEventTap] Install retry skipped: Input Monitoring is not granted after reason=\(reason)")
+            return
+        }
+
         guard installRetryCount < maxInstallRetryCount else {
             print("[KeyboardEventTap] Install retry limit reached after reason=\(reason)")
             return
@@ -390,6 +452,10 @@ final class KeyboardEventTap {
         }
     }
 
+    private func hasInputMonitoringAccess() -> Bool {
+        IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
+    }
+
     private func isSystemCommandTabKeyEvent(type: CGEventType, keyCode: UInt16, flags: CGEventFlags) -> Bool {
         (type == .keyDown || type == .keyUp)
             && keyCode == activationKeyCode
@@ -401,17 +467,22 @@ final class KeyboardEventTap {
 
         if nativeCommandTabSessionActive {
             if flags.contains(.maskShift) {
-                print("[KeyboardEventTap] Observed native Cmd+Shift+Tab cycle")
+                debugLog("Observed native Cmd+Shift+Tab cycle")
                 onShortcutTriggered.send(.nativeSwitchCyclePrevious)
             } else {
-                print("[KeyboardEventTap] Observed native Cmd+Tab cycle")
+                debugLog("Observed native Cmd+Tab cycle")
                 onShortcutTriggered.send(.nativeSwitchCycleNext)
             }
         } else {
             nativeCommandTabSessionActive = true
-            print("[KeyboardEventTap] Observed native Cmd+Tab session start")
-            onShortcutTriggered.send(.nativeSwitchStarted)
+            debugLog("Observed native Cmd+Tab session start")
+            onShortcutTriggered.send(.nativeSwitchStarted(reverse: flags.contains(.maskShift)))
         }
+    }
+
+    private func debugLog(_ message: String) {
+        guard isKeyboardDebugLoggingEnabled else { return }
+        print("[KeyboardEventTap][debug] \(message)")
     }
 
     private func logKeyboardEvent(type: CGEventType, keyCode: UInt16, flags: CGEventFlags, isRepeat: Bool) {
@@ -438,6 +509,8 @@ final class KeyboardEventTap {
             return "Tab"
         case kVK_Space:
             return "Space"
+        case kVK_ANSI_Slash:
+            return "Slash"
         case kVK_ANSI_Grave:
             return "Grave"
         case kVK_Return:
@@ -471,11 +544,12 @@ final class KeyboardEventTap {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             let reason = type == .tapDisabledByTimeout ? "tapDisabledByTimeout" : "tapDisabledByUserInput"
             print("[KeyboardEventTap] \(reason) received; re-enabling tap")
+            resetShortcutState(reason: reason)
             if let tap = eventTap {
                 CGEvent.tapEnable(tap: tap, enable: true)
                 print("[KeyboardEventTap] Re-enable requested; enabled=\(CGEvent.tapIsEnabled(tap: tap))")
             } else {
-                print("[KeyboardEventTap] Disable event received but eventTap is nil; rebuilding")
+                print("[KeyboardEventTap] Disable event received but eventTap is nil; scheduling install")
                 scheduleInstall(reason: reason, delay: 0.2)
             }
             return Unmanaged.passUnretained(event)
@@ -486,18 +560,20 @@ final class KeyboardEventTap {
         let flags = event.flags
         let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
 
+        if !hasLoggedFirstCallback {
+            hasLoggedFirstCallback = true
+            print("[KeyboardEventTap] First key event callback received type=\(type.rawValue) key=\(keyName(for: keyCode)) flags=\(modifierDescription(from: flags))")
+        }
+
         if type != .flagsChanged {
             logKeyboardEvent(type: type, keyCode: keyCode, flags: flags, isRepeat: isRepeat)
         }
 
         if isSystemCommandTabKeyEvent(type: type, keyCode: keyCode, flags: flags) {
-            observeSystemCommandTabEvent(type: type, keyCode: keyCode, flags: flags)
-            if activeActivationShortcut?.modifiers.contains(.command) == true {
-                showSwitcherTimer?.cancel()
-                showSwitcherTimer = nil
-                pendingActivation = false
-                activeActivationShortcut = nil
+            if pendingActivation || activeActivationShortcut != nil {
+                resetShortcutState(reason: "clearing stale workspace state before Cmd+Tab pass-through")
             }
+            observeSystemCommandTabEvent(type: type, keyCode: keyCode, flags: flags)
             return Unmanaged.passUnretained(event)
         }
 
@@ -511,7 +587,7 @@ final class KeyboardEventTap {
             if nativeCommandTabSessionActive,
                modifierTracker.wasModifierReleased(oldFlags: oldFlags, newFlags: flags, modifier: .command) {
                 nativeCommandTabSessionActive = false
-                print("[KeyboardEventTap] Observed native Cmd+Tab session end")
+                debugLog("Observed native Cmd+Tab session end")
                 onShortcutTriggered.send(.nativeSwitchEnded)
                 return Unmanaged.passUnretained(event)
             }
@@ -528,7 +604,7 @@ final class KeyboardEventTap {
                 if pendingActivation && !hadInteractionSinceActivation {
                     pendingActivation = false
                     activeActivationShortcut = nil
-                    print("[KeyboardEventTap] Quick switch detected (\(Int(elapsed * 1000))ms)")
+                    debugLog("Quick switch detected (\(Int(elapsed * 1000))ms)")
                     onShortcutTriggered.send(.quickSwitch)
                     return nil
                 }
@@ -537,7 +613,7 @@ final class KeyboardEventTap {
                 if switcherVisible && !searchModeActive {
                     pendingActivation = false
                     activeActivationShortcut = nil
-                    print("[KeyboardEventTap] Modifier released, confirming selection")
+                    debugLog("Modifier released, confirming selection")
                     onShortcutTriggered.send(.confirm)
                     return nil
                 }
@@ -553,7 +629,7 @@ final class KeyboardEventTap {
         if type == .keyUp {
             if keyCode == UInt16(kVK_ANSI_Q) && isHoldingQuit {
                 isHoldingQuit = false
-                print("[KeyboardEventTap] Q released, cancel quit hold")
+                debugLog("Q released, cancel quit hold")
                 onShortcutTriggered.send(.quitHoldCancelled)
                 return nil
             }
@@ -562,11 +638,11 @@ final class KeyboardEventTap {
                 isHoldingE = false
                 if holdDuration < eHoldThreshold {
                     // Short tap → toggle resource monitor
-                    print("[KeyboardEventTap] E tapped (\(Int(holdDuration * 1000))ms), toggle monitor")
+                    debugLog("E tapped (\(Int(holdDuration * 1000))ms), toggle monitor")
                     onShortcutTriggered.send(.toggleResourceMonitor)
                 } else {
                     // Long hold → AI insight requested
-                    print("[KeyboardEventTap] E held (\(Int(holdDuration * 1000))ms), AI insight")
+                    debugLog("E held (\(Int(holdDuration * 1000))ms), AI insight")
                     onShortcutTriggered.send(.aiInsightRequested)
                 }
                 return nil
@@ -579,11 +655,22 @@ final class KeyboardEventTap {
             return Unmanaged.passUnretained(event)
         }
 
+        if nativeCommandTabSessionActive,
+           flags.contains(.maskCommand),
+           keyCode == UInt16(kVK_ANSI_Grave) {
+            if flags.contains(.maskShift) {
+                onShortcutTriggered.send(.nativeSwitchWindowPrevious)
+            } else {
+                onShortcutTriggered.send(.nativeSwitchWindowNext)
+            }
+            return nil
+        }
+
         // Handle shortcuts while switcher is visible OR pending (check this FIRST)
         if switcherVisible || pendingActivation {
             // Activation key = cycle through apps while holding the active shortcut modifiers.
             // If pending, this cancels quick-switch and shows the panel.
-            if let shortcut = activeShortcutMatches(keyCode: keyCode) {
+            if let shortcut = activeShortcutMatches(keyCode: keyCode, flags: flags) {
                 hadInteractionSinceActivation = true
 
                 // If still pending, cancel timer and show panel now
@@ -592,17 +679,17 @@ final class KeyboardEventTap {
                     showSwitcherTimer = nil
                     pendingActivation = false
                     switcherVisible = true
-                    print("[KeyboardEventTap] Second activation key pressed (\(shortcut.name)), showing switcher immediately")
+                    debugLog("Second activation key pressed (\(shortcut.name)), showing switcher immediately")
                     onShortcutTriggered.send(.showSwitcher)
                     // Don't cycle yet - first show, next activation key will cycle
                     return nil
                 }
 
                 if shortcut.usesShiftForReverse && modifierTracker.isShiftPressed {
-                    print("[KeyboardEventTap] Cycle previous")
+                    debugLog("Cycle previous")
                     onShortcutTriggered.send(.cyclePrevious)
                 } else {
-                    print("[KeyboardEventTap] Cycle next")
+                    debugLog("Cycle next")
                     onShortcutTriggered.send(.cycleNext)
                 }
                 return nil
@@ -612,12 +699,20 @@ final class KeyboardEventTap {
             if keyCode == UInt16(kVK_ANSI_Grave) {
                 hadInteractionSinceActivation = true
                 if modifierTracker.isShiftPressed {
-                    print("[KeyboardEventTap] Cycle window previous")
+                    debugLog("Cycle window previous")
                     onShortcutTriggered.send(.cycleWindowPrevious)
                 } else {
-                    print("[KeyboardEventTap] Cycle window next")
+                    debugLog("Cycle window next")
                     onShortcutTriggered.send(.cycleWindowNext)
                 }
+                return nil
+            }
+
+            if switcherVisible && !searchModeActive && (keyCode == UInt16(kVK_Space) || keyCode == UInt16(kVK_ANSI_Slash)) {
+                hadInteractionSinceActivation = true
+                searchModeActive = true
+                debugLog("Pin workspace search")
+                onShortcutTriggered.send(.pinWorkspaceSearch)
                 return nil
             }
 
@@ -631,7 +726,7 @@ final class KeyboardEventTap {
                     if !isHoldingQuit {
                         isHoldingQuit = true
                         hadInteractionSinceActivation = true
-                        print("[KeyboardEventTap] Q pressed, start quit hold")
+                        debugLog("Q pressed, start quit hold")
                         onShortcutTriggered.send(.quitHoldStarted)
                     }
                     return nil
@@ -665,10 +760,10 @@ final class KeyboardEventTap {
             if keyCode == UInt16(kVK_Return) {
                 hadInteractionSinceActivation = true
                 if searchModeActive {
-                    print("[KeyboardEventTap] Confirm search selection")
+                    debugLog("Confirm search selection")
                     onShortcutTriggered.send(.confirm)
                 } else {
-                    print("[KeyboardEventTap] Activate search")
+                    debugLog("Activate search")
                     onShortcutTriggered.send(.activateSearch)
                 }
                 return nil
@@ -676,24 +771,38 @@ final class KeyboardEventTap {
 
             // Escape = dismiss
             if keyCode == UInt16(kVK_Escape) {
-                print("[KeyboardEventTap] Dismiss")
+                debugLog("Dismiss")
                 onShortcutTriggered.send(.dismiss)
                 return nil
             }
 
             // Arrow keys for navigation (WSAD only in normal mode so user can type in search)
             if searchModeActive {
+                if flags.contains(.maskCommand), keyCode == UInt16(kVK_ANSI_1) {
+                    hadInteractionSinceActivation = true
+                    debugLog("Search scope = current app")
+                    onShortcutTriggered.send(.workspaceSearchScopeCurrentApp)
+                    return nil
+                }
+
+                if flags.contains(.maskCommand), keyCode == UInt16(kVK_ANSI_2) {
+                    hadInteractionSinceActivation = true
+                    debugLog("Search scope = all windows")
+                    onShortcutTriggered.send(.workspaceSearchScopeAllWindows)
+                    return nil
+                }
+
                 // In search mode: only arrow keys navigate results (WSAD passed through for typing)
                 if keyCode == UInt16(kVK_UpArrow) || keyCode == UInt16(kVK_LeftArrow) {
                     hadInteractionSinceActivation = true
-                    print("[KeyboardEventTap] Navigate up (search)")
+                    debugLog("Navigate up (search)")
                     onShortcutTriggered.send(.navigateUp)
                     return nil
                 }
 
                 if keyCode == UInt16(kVK_DownArrow) || keyCode == UInt16(kVK_RightArrow) {
                     hadInteractionSinceActivation = true
-                    print("[KeyboardEventTap] Navigate down (search)")
+                    debugLog("Navigate down (search)")
                     onShortcutTriggered.send(.navigateDown)
                     return nil
                 }
@@ -702,10 +811,10 @@ final class KeyboardEventTap {
                 if keyCode == activationKeyCode {
                     hadInteractionSinceActivation = true
                     if modifierTracker.isShiftPressed {
-                        print("[KeyboardEventTap] Tab+Shift in search = navigate up")
+                        debugLog("Tab+Shift in search = navigate up")
                         onShortcutTriggered.send(.navigateUp)
                     } else {
-                        print("[KeyboardEventTap] Tab in search = navigate down")
+                        debugLog("Tab in search = navigate down")
                         onShortcutTriggered.send(.navigateDown)
                     }
                     return nil
@@ -715,14 +824,14 @@ final class KeyboardEventTap {
                 // Left/Right (A/D) = cycle through apps (linear)
                 if keyCode == UInt16(kVK_LeftArrow) || keyCode == UInt16(kVK_ANSI_A) {
                     hadInteractionSinceActivation = true
-                    print("[KeyboardEventTap] Left/A = previous app")
+                    debugLog("Left/A = previous app")
                     onShortcutTriggered.send(.cyclePrevious)
                     return nil
                 }
 
                 if keyCode == UInt16(kVK_RightArrow) || keyCode == UInt16(kVK_ANSI_D) {
                     hadInteractionSinceActivation = true
-                    print("[KeyboardEventTap] Right/D = next app")
+                    debugLog("Right/D = next app")
                     onShortcutTriggered.send(.cycleNext)
                     return nil
                 }
@@ -730,14 +839,14 @@ final class KeyboardEventTap {
                 // Up/Down (W/S) = cycle windows in the selected app.
                 if keyCode == UInt16(kVK_UpArrow) || keyCode == UInt16(kVK_ANSI_W) {
                     hadInteractionSinceActivation = true
-                    print("[KeyboardEventTap] Up/W = previous window")
+                    debugLog("Up/W = previous window")
                     onShortcutTriggered.send(.navigateRowUp)
                     return nil
                 }
 
                 if keyCode == UInt16(kVK_DownArrow) || keyCode == UInt16(kVK_ANSI_S) {
                     hadInteractionSinceActivation = true
-                    print("[KeyboardEventTap] Down/S = next window")
+                    debugLog("Down/S = next window")
                     onShortcutTriggered.send(.navigateRowDown)
                     return nil
                 }
@@ -748,8 +857,10 @@ final class KeyboardEventTap {
         }
 
         // Check for activation shortcut only when switcher is not visible.
-        if let shortcut = matchingActivationShortcut(for: keyCode), !pendingActivation {
-            print("[KeyboardEventTap] Activation started via \(shortcut.name) (switcherVisible=\(switcherVisible))")
+        if let shortcut = matchingActivationShortcut(for: keyCode, flags: flags), !pendingActivation {
+            debugLog("Activation started via \(shortcut.name) (switcherVisible=\(switcherVisible))")
+            previousFlags = flags
+            modifierTracker.update(flags: flags)
             activationTime = CFAbsoluteTimeGetCurrent()
             hadInteractionSinceActivation = false
             pendingActivation = true
@@ -764,7 +875,7 @@ final class KeyboardEventTap {
                 pendingActivation = false
                 switcherVisible = true
                 activeActivationShortcut = nil
-                print("[KeyboardEventTap] Showing switcher immediately via \(shortcut.name)")
+                debugLog("Showing switcher immediately via \(shortcut.name)")
                 onShortcutTriggered.send(.showSwitcher)
                 return nil
             }
@@ -774,7 +885,7 @@ final class KeyboardEventTap {
                 guard let self = self, self.pendingActivation else { return }
                 self.pendingActivation = false
                 self.switcherVisible = true
-                print("[KeyboardEventTap] Timer fired, showing switcher via \(self.activeActivationShortcut?.name ?? "unknown shortcut")")
+                self.debugLog("Timer fired, showing switcher via \(self.activeActivationShortcut?.name ?? "unknown shortcut")")
                 self.onShortcutTriggered.send(.showSwitcher)
             }
             showSwitcherTimer = timer

@@ -2,23 +2,18 @@ import Foundation
 import AppKit
 import Combine
 
-/// High-performance window cache with lock-free reads for maximum speed
+/// High-performance window cache with short synchronized reads for safe background refresh.
 final class WindowCache: @unchecked Sendable {
     static let shared = WindowCache()
 
-    // Use atomic pointer swap for lock-free reads
     private var cache: [ApplicationModel] = []
     private var lastUpdate: Date?
     private let ttl: TimeInterval = 2.0  // 2 second cache - longer TTL since we refresh on activation
     private let lock = NSLock()
+    private let enumerationLock = NSLock()
 
     // Track if a prefetch is in progress to avoid duplicate work
     private var prefetchInProgress = false
-
-    // Suppress external activation notifications during our own switches
-    // Only suppress the specific app we just switched to
-    private var suppressedPid: pid_t?
-    private var suppressUntil: Date?
 
     private let enumerator = WindowEnumerator()
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -28,12 +23,15 @@ final class WindowCache: @unchecked Sendable {
     /// Get cached applications WITHOUT blocking - returns stale data if cache is being refreshed
     /// This is the fast path for UI display
     func getCachedApplications() -> [ApplicationModel] {
-        // Lock-free read of cached data
+        lock.lock()
+        defer { lock.unlock() }
         return cache
     }
 
     /// Check if we have any cached data
     var hasCachedData: Bool {
+        lock.lock()
+        defer { lock.unlock() }
         return !cache.isEmpty
     }
 
@@ -41,52 +39,103 @@ final class WindowCache: @unchecked Sendable {
     /// WARNING: This can block if called while prefetch is running
     func getApplicationsSync(forceRefresh: Bool = false) -> [ApplicationModel] {
         lock.lock()
-        defer { lock.unlock() }
-
         if !forceRefresh,
            let lastUpdate = lastUpdate,
            Date().timeIntervalSince(lastUpdate) < ttl,
            !cache.isEmpty {
-            return cache
+            let cachedApplications = cache
+            lock.unlock()
+            return cachedApplications
         }
 
-        // Capture existing order for MRU preservation
         let existingOrder = cache.map { $0.pid }
+        lock.unlock()
 
-        // Enumerate synchronously (this is slow, ~100-200ms)
-        var freshApplications = enumerator.enumerateGroupedByApp()
+        var freshApplications = enumerateApplications(options: enumerationOptions())
         attachResourceUsage(to: &freshApplications)
+        return updateCache(with: freshApplications, preservingOrder: existingOrder)
+    }
 
-        // Merge preserving MRU order
-        if existingOrder.isEmpty {
-            cache = freshApplications
-        } else {
-            var freshByPid: [pid_t: ApplicationModel] = [:]
-            for app in freshApplications {
-                freshByPid[app.pid] = app
-            }
+    func getApplicationsForNativePreview() -> [ApplicationModel] {
+        let existingOrder = getCachedApplications().map { $0.pid }
+        var applications = enumerateApplications(
+            options: enumerationOptions(includeAllSpacesOverride: true)
+        )
+        attachResourceUsage(to: &applications)
 
-            var result: [ApplicationModel] = []
-            var usedPids: Set<pid_t> = []
+        return mergeApplications(applications, preservingOrder: existingOrder)
+    }
 
-            for pid in existingOrder {
-                if let freshApp = freshByPid[pid] {
-                    result.append(freshApp)
-                    usedPids.insert(pid)
-                }
-            }
+    func getApplicationsForWorkspaceSwitching() -> [ApplicationModel] {
+        let existingOrder = getCachedApplications().map { $0.pid }
+        var applications = enumerateApplications(
+            options: enumerationOptions(includeAllSpacesOverride: true)
+        )
+        attachResourceUsage(to: &applications)
 
-            for app in freshApplications {
-                if !usedPids.contains(app.pid) {
-                    result.append(app)
-                }
-            }
+        return mergeApplications(applications, preservingOrder: existingOrder)
+    }
 
-            cache = result
+    private func enumerateApplications(options: WindowEnumerator.EnumerationOptions) -> [ApplicationModel] {
+        enumerationLock.lock()
+        defer { enumerationLock.unlock() }
+        return enumerator.enumerateGroupedByApp(options: options)
+    }
+
+    private func updateCache(
+        with freshApplications: [ApplicationModel],
+        preservingOrder existingOrder: [pid_t]
+    ) -> [ApplicationModel] {
+        let mergedApplications = mergeApplications(freshApplications, preservingOrder: existingOrder)
+        lock.lock()
+        cache = mergedApplications
+        lastUpdate = Date()
+        lock.unlock()
+        return mergedApplications
+    }
+
+    func applicationMatchingForNativePreview(
+        pid: pid_t?,
+        bundleIdentifier: String?
+    ) -> ApplicationModel? {
+        applicationMatching(
+            pid: pid,
+            bundleIdentifier: bundleIdentifier,
+            in: getApplicationsForNativePreview()
+        )
+    }
+
+    func applicationMatching(
+        pid: pid_t?,
+        bundleIdentifier: String?,
+        forceRefreshIfMissing: Bool = true
+    ) -> ApplicationModel? {
+        if let match = applicationMatching(pid: pid, bundleIdentifier: bundleIdentifier, in: getCachedApplications()) {
+            return match
         }
 
-        lastUpdate = Date()
-        return cache
+        guard forceRefreshIfMissing else { return nil }
+        return applicationMatching(
+            pid: pid,
+            bundleIdentifier: bundleIdentifier,
+            in: getApplicationsSync(forceRefresh: true)
+        )
+    }
+
+    private func applicationMatching(
+        pid: pid_t?,
+        bundleIdentifier: String?,
+        in applications: [ApplicationModel]
+    ) -> ApplicationModel? {
+        if let pid, let app = applications.first(where: { $0.pid == pid }) {
+            return app
+        }
+
+        if let bundleIdentifier, let app = applications.first(where: { $0.bundleIdentifier == bundleIdentifier }) {
+            return app
+        }
+
+        return nil
     }
 
     /// Async wrapper for compatibility
@@ -111,7 +160,7 @@ final class WindowCache: @unchecked Sendable {
         lock.unlock()
 
         // Run enumeration (this is the slow part - don't hold lock during this!)
-        var freshApplications = enumerator.enumerateGroupedByApp()
+        var freshApplications = enumerateApplications(options: enumerationOptions())
         attachResourceUsage(to: &freshApplications)
 
         // Merge: preserve MRU order from existing cache, but use fresh window data
@@ -170,18 +219,10 @@ final class WindowCache: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Move an app to the front of the cache (called after switching to it)
-    /// This is much faster than re-enumerating all windows
-    /// Set fromOurSwitch=true when called from WindowSwitcher to suppress duplicate notifications
+    /// Move an app to the front of the cache. This is much faster than re-enumerating all windows.
     func moveAppToFront(pid: pid_t, fromOurSwitch: Bool = false) {
         lock.lock()
         defer { lock.unlock() }
-
-        // If this is from our own switch, suppress external notifications for this specific app briefly
-        if fromOurSwitch {
-            suppressedPid = pid
-            suppressUntil = Date().addingTimeInterval(0.3)  // 300ms window (shorter to allow rapid switching)
-        }
 
         guard let index = cache.firstIndex(where: { $0.pid == pid }) else {
             // App not in cache - invalidate so next fetch gets fresh data
@@ -191,23 +232,6 @@ final class WindowCache: @unchecked Sendable {
         }
 
         let appName = cache[index].name
-
-        // Already at front? Just update active state
-        if index == 0 {
-            print("[WindowCache] moveAppToFront: \(appName) already at front")
-            if !cache.isEmpty && !cache[0].isActive {
-                cache[0] = ApplicationModel(
-                    pid: cache[0].pid,
-                    bundleIdentifier: cache[0].bundleIdentifier,
-                    name: cache[0].name,
-                    icon: cache[0].icon,
-                    windows: cache[0].windows,
-                    isActive: true,
-                    memoryBytes: cache[0].memoryBytes
-                )
-            }
-            return
-        }
 
         // Move the activated app to the front
         let app = cache.remove(at: index)
@@ -228,20 +252,36 @@ final class WindowCache: @unchecked Sendable {
 
         // Log the new order (top 5 apps)
         let topApps = cache.prefix(5).map { $0.name }.joined(separator: " > ")
-        print("[WindowCache] moveAppToFront: \(appName) moved from index \(index) to front. Order: \(topApps)")
+        let source = fromOurSwitch ? "WindowLens" : "system"
+        print("[WindowCache] moveAppToFront: \(appName) moved from index \(index) to front via \(source). Order: \(topApps)")
     }
 
-    /// Check if external activation should be suppressed for a specific PID
-    private func shouldSuppressExternalActivation(for pid: pid_t) -> Bool {
-        if let suppressedPid = suppressedPid, suppressedPid == pid {
-            if let until = suppressUntil, Date() < until {
-                return true
-            }
-            // Suppression expired
-            self.suppressedPid = nil
-            suppressUntil = nil
+    @discardableResult
+    func reconcileActivatedApplication(_ runningApplication: NSRunningApplication) -> [ApplicationModel] {
+        let pid = runningApplication.processIdentifier
+        guard pid >= 0, runningApplication.activationPolicy == .regular else {
+            return getCachedApplications()
         }
-        return false
+
+        moveAppToFront(pid: pid, fromOurSwitch: false)
+        let snapshot = getCachedApplications()
+
+        guard snapshot.contains(where: { $0.pid == pid }) else {
+            _ = getApplicationsSync(forceRefresh: true)
+            moveAppToFront(pid: pid, fromOurSwitch: false)
+            return getCachedApplications()
+        }
+
+        return snapshot
+    }
+
+    @discardableResult
+    func reconcileFrontmostApplication() -> [ApplicationModel] {
+        guard let frontmostApplication = NSWorkspace.shared.frontmostApplication else {
+            return getCachedApplications()
+        }
+
+        return reconcileActivatedApplication(frontmostApplication)
     }
 
     /// Attach resource usage data to applications (lightweight, ~1-3ms)
@@ -255,7 +295,50 @@ final class WindowCache: @unchecked Sendable {
         }
     }
 
+    private func enumerationOptions(includeAllSpacesOverride: Bool? = nil) -> WindowEnumerator.EnumerationOptions {
+        let preferences = UserPreferences.load()
+        return WindowEnumerator.EnumerationOptions(
+            includeMinimized: preferences.showMinimizedWindows,
+            includeAllSpaces: includeAllSpacesOverride ?? preferences.showAllSpaces
+        )
+    }
+
+    private func mergeApplications(
+        _ freshApplications: [ApplicationModel],
+        preservingOrder existingOrder: [pid_t]
+    ) -> [ApplicationModel] {
+        guard !existingOrder.isEmpty else {
+            return freshApplications
+        }
+
+        var freshByPid: [pid_t: ApplicationModel] = [:]
+        for app in freshApplications {
+            freshByPid[app.pid] = app
+        }
+
+        var result: [ApplicationModel] = []
+        var usedPids: Set<pid_t> = []
+
+        for pid in existingOrder {
+            if let freshApp = freshByPid[pid] {
+                result.append(freshApp)
+                usedPids.insert(pid)
+            }
+        }
+
+        for app in freshApplications where !usedPids.contains(app.pid) {
+            result.append(app)
+        }
+
+        return result
+    }
+
     func startMonitoring() {
+        guard workspaceObservers.isEmpty else {
+            print("[WindowCache] Workspace monitoring already started")
+            return
+        }
+
         let workspace = NSWorkspace.shared
         let notificationCenter = workspace.notificationCenter
 
@@ -270,15 +353,16 @@ final class WindowCache: @unchecked Sendable {
 
             let pid = app.processIdentifier
 
-            // Skip if we're suppressing this specific app (our own switch just happened)
-            if self.shouldSuppressExternalActivation(for: pid) {
-                print("[WindowCache] Ignoring our own activation: \(app.localizedName ?? "unknown")")
-                return
-            }
-
-            // When an app is activated externally, move it to front of our cache
-            self.moveAppToFront(pid: pid, fromOurSwitch: false)
-            print("[WindowCache] App activated externally: \(app.localizedName ?? "unknown")")
+            let applications = self.reconcileActivatedApplication(app)
+            print("[WindowCache] App activation reconciled: \(app.localizedName ?? "unknown")")
+            NotificationCenter.default.post(
+                name: .workspaceActiveApplicationDidReconcile,
+                object: self,
+                userInfo: [
+                    "pid": pid,
+                    "applications": applications
+                ]
+            )
         }
         workspaceObservers.append(activateObserver)
 
@@ -309,7 +393,19 @@ final class WindowCache: @unchecked Sendable {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.invalidate()
+            guard let self else { return }
+            self.invalidate()
+            let applications = self.reconcileFrontmostApplication()
+            let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
+            NotificationCenter.default.post(
+                name: .workspaceActiveApplicationDidReconcile,
+                object: self,
+                userInfo: [
+                    "pid": pid,
+                    "applications": applications
+                ]
+            )
+            self.prefetchAsync()
         }
         workspaceObservers.append(spaceObserver)
 
@@ -324,4 +420,8 @@ final class WindowCache: @unchecked Sendable {
         workspaceObservers.removeAll()
         print("[WindowCache] Stopped monitoring workspace notifications")
     }
+}
+
+extension Notification.Name {
+    static let workspaceActiveApplicationDidReconcile = Notification.Name("workspaceActiveApplicationDidReconcile")
 }

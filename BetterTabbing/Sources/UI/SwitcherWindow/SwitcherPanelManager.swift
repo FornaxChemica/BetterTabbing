@@ -88,6 +88,18 @@ final class SwitcherPanelManager {
         }
     }
 
+    private func ensurePanelExists(for screen: NSScreen) -> SwitcherPanel? {
+        guard let id = screenIdentifier(for: screen) else { return nil }
+        if let panel = panels[id] {
+            panel.updateAssociatedScreen(screen)
+            return panel
+        }
+
+        let panel = createPanel(for: screen)
+        panels[id] = panel
+        return panel
+    }
+
     // MARK: - Show/Hide
 
     func showWithCachedData(mode: SwitcherPresentationMode = .workspace) {
@@ -128,12 +140,220 @@ final class SwitcherPanelManager {
         print("[SwitcherPanelManager] Shown \(panels.count) panels")
     }
 
+    func showNativePreview(applications: [ApplicationModel], showImmediately: Bool = true) {
+        AppState.shared.beginNativePreviewSession(applications)
+        if showImmediately {
+            showNativePanelOnTargetScreen()
+        }
+        print("[SwitcherPanelManager] Shown native preview session with \(applications.count) apps")
+    }
+
+    func showNativeFallbackPreviewPanel() {
+        guard AppState.shared.hasNativeSelection else { return }
+        showNativePanelOnTargetScreen()
+    }
+
+    func showNativeTraversalSnapshot(applications: [ApplicationModel], reverse: Bool) {
+        AppState.shared.beginNativeTraversalSnapshot(applications, reverse: reverse)
+        showNativePanelOnTargetScreen()
+        print("[SwitcherPanelManager] Shown frozen native traversal snapshot with \(applications.count) apps")
+    }
+
+    func showCurrentAppWindowSwitcher() {
+        guard let targetScreen = nativePreviewScreen(),
+              let targetPanel = ensurePanelExists(for: targetScreen) else { return }
+
+        for panel in panels.values where panel !== targetPanel {
+            if panel.isVisible {
+                panel.hidePanel()
+            }
+        }
+
+        targetPanel.showOnScreen(mode: .workspace, skipStateUpdate: true)
+        print("[SwitcherPanelManager] Shown current-app window switcher")
+    }
+
+    private func showNativePanelOnTargetScreen() {
+        guard let targetScreen = nativePreviewScreen() else { return }
+        guard let targetPanel = ensurePanelExists(for: targetScreen) else { return }
+
+        for panel in panels.values where panel !== targetPanel {
+            if panel.isVisible {
+                panel.hidePanel()
+            }
+        }
+
+        if targetPanel.isVisible {
+            targetPanel.recenterOnAssociatedScreen()
+        } else {
+            targetPanel.showOnScreen(mode: .nativePreview, skipStateUpdate: true)
+        }
+    }
+
+    private func nativePreviewScreen() -> NSScreen? {
+        if let anchorFrame = AppState.shared.nativeSelectedItemFrame {
+            let center = CGPoint(x: anchorFrame.midX, y: anchorFrame.midY)
+            if let screen = NSScreen.screens.first(where: { $0.frame.contains(center) }) {
+                return screen
+            }
+        }
+
+        let mouseLocation = NSEvent.mouseLocation
+        if let screen = NSScreen.screens.first(where: { $0.frame.contains(mouseLocation) }) {
+            return screen
+        }
+
+        return NSScreen.main ?? NSScreen.screens.first
+    }
+
     func hide() {
         for panel in panels.values {
             panel.hidePanel()
         }
         AppState.shared.reset()
         print("[SwitcherPanelManager] Hidden all \(panels.count) panels")
+    }
+
+    func reconcileSystemActivation(
+        applications: [ApplicationModel],
+        activePID: pid_t?,
+        preserveCurrentSelection: Bool = false
+    ) {
+        guard !AppState.shared.isNativeTraversalSnapshotActive else {
+            print("[SwitcherPanelManager] Deferred visible MRU reconciliation during native Cmd+Tab snapshot")
+            return
+        }
+
+        AppState.shared.reconcileApplications(
+            applications,
+            selectedPID: activePID,
+            preserveCurrentSelection: preserveCurrentSelection
+        )
+
+        for panel in panels.values where panel.isVisible {
+            panel.recenterOnAssociatedScreen()
+        }
+    }
+
+    func reconcileFrontmostApplication(preserveCurrentSelection: Bool = false) {
+        let applications = WindowCache.shared.reconcileFrontmostApplication()
+        let activePID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        reconcileSystemActivation(
+            applications: applications,
+            activePID: activePID,
+            preserveCurrentSelection: preserveCurrentSelection
+        )
+    }
+
+    func finishNativeTraversalAndReconcileFrontmost() {
+        AppState.shared.endNativeTraversalSnapshot()
+        reconcileFrontmostApplication()
+    }
+
+    @discardableResult
+    func selectNativeDockSelection(_ selection: DockProcessSwitcherSelection) -> Bool {
+        let resolvedApplication = AppState.shared.applications.first { app in
+            if let pid = selection.pid, app.pid == pid {
+                return true
+            }
+            if let bundleIdentifier = selection.bundleIdentifier, app.bundleIdentifier == bundleIdentifier {
+                return true
+            }
+            return false
+        } ?? WindowCache.shared.applicationMatchingForNativePreview(
+            pid: selection.pid,
+            bundleIdentifier: selection.bundleIdentifier
+        ) ?? nativePlaceholderApplication(for: selection)
+
+        let didSelect = AppState.shared.selectNativeApplication(
+            pid: resolvedApplication.pid,
+            bundleIdentifier: resolvedApplication.bundleIdentifier,
+            title: resolvedApplication.name,
+            anchorFrame: selection.frame,
+            resolvedApplication: resolvedApplication
+        )
+
+        if didSelect {
+            showNativePanelOnTargetScreen()
+        }
+
+        return didSelect
+    }
+
+    private func nativePlaceholderApplication(for selection: DockProcessSwitcherSelection) -> ApplicationModel {
+        let runningApplication = runningApplication(for: selection)
+        let pid = runningApplication?.processIdentifier ?? selection.pid ?? -1
+        let bundleIdentifier = runningApplication?.bundleIdentifier
+            ?? selection.bundleIdentifier
+            ?? "native.placeholder.\(pid)"
+        let appName = runningApplication?.localizedName
+            ?? selection.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? "No Windows"
+        let icon = runningApplication?.icon
+            ?? NSImage(named: NSImage.applicationIconName)
+            ?? NSImage()
+        let windowTitle = runningApplication == nil ? appName : "No Windows"
+        let windowID = PreviewIdentity.pseudoWindowID(
+            ownerPID: pid,
+            axIndex: 0,
+            title: windowTitle,
+            bounds: .zero
+        )
+        let placeholderWindow = WindowModel(
+            windowID: windowID,
+            title: windowTitle,
+            bounds: .zero,
+            isMinimized: false,
+            isOnScreen: false,
+            ownerPID: pid,
+            bundleIdentifier: bundleIdentifier,
+            axIndex: 0,
+            hasReliableWindowID: false,
+            previewImage: nil,
+            subtitle: "No Windows"
+        )
+
+        return ApplicationModel(
+            pid: pid,
+            bundleIdentifier: bundleIdentifier,
+            name: appName,
+            icon: icon,
+            windows: [placeholderWindow],
+            isActive: runningApplication?.isActive ?? false
+        )
+    }
+
+    private func runningApplication(for selection: DockProcessSwitcherSelection) -> NSRunningApplication? {
+        if let pid = selection.pid,
+           let app = NSRunningApplication(processIdentifier: pid),
+           app.activationPolicy == .regular {
+            return app
+        }
+
+        if let bundleIdentifier = selection.bundleIdentifier,
+           let app = NSWorkspace.shared.runningApplications.first(where: {
+               $0.activationPolicy == .regular && $0.bundleIdentifier == bundleIdentifier
+           }) {
+            return app
+        }
+
+        guard let title = selection.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !title.isEmpty else {
+            return nil
+        }
+
+        let normalizedTitle = PreviewIdentity.normalizedTitle(title)
+        return NSWorkspace.shared.runningApplications.first { app in
+            guard app.activationPolicy == .regular,
+                  let localizedName = app.localizedName else {
+                return false
+            }
+
+            let appName = PreviewIdentity.normalizedTitle(localizedName)
+            return appName == normalizedTitle
+                || normalizedTitle.contains(appName)
+                || appName.contains(normalizedTitle)
+        }
     }
 
     // MARK: - Navigation (state is shared via AppState)
@@ -189,10 +409,31 @@ final class SwitcherPanelManager {
         // Then switch
         if app.windows.indices.contains(windowIndex) {
             let window = app.windows[windowIndex]
+            postWorkspaceWindowActivationIfNeeded(app: app, window: window, windowIndex: windowIndex)
             WindowSwitcher.shared.switchTo(window: window, in: app, windowIndex: windowIndex)
         } else {
             WindowSwitcher.shared.activate(app: app)
         }
+    }
+
+    private func postWorkspaceWindowActivationIfNeeded(
+        app: ApplicationModel,
+        window: WindowModel,
+        windowIndex: Int
+    ) {
+        guard AppState.shared.presentationMode == .workspace,
+              !window.isWindowlessPlaceholder else {
+            return
+        }
+
+        NotificationCenter.default.post(
+            name: .workspaceWindowActivated,
+            object: nil,
+            userInfo: [
+                "pid": app.pid,
+                "windowIndex": windowIndex
+            ]
+        )
     }
 
     // MARK: - Click Outside Detection

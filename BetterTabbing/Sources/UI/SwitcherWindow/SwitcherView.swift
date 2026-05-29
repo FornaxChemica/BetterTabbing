@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct SwitcherView: View {
@@ -9,12 +10,18 @@ struct SwitcherView: View {
         appState.isSearchActive && !appState.searchQuery.isEmpty
     }
 
+    private var isPinnedWindowSearch: Bool {
+        appState.presentationMode == .workspace && appState.workspaceMode == .globalWindowSearch
+    }
+
     var body: some View {
         Group {
             if appState.presentationMode == .nativePreview {
                 nativePreviewOverlay
+            } else if isPinnedWindowSearch {
+                globalWindowSearchOverlay
             } else {
-                workspaceOverlay
+                currentAppWindowOverlay
             }
         }
         .frame(width: calculateWidth())
@@ -54,93 +61,75 @@ struct SwitcherView: View {
         .padding(.vertical, 10)
     }
 
-    private var workspaceOverlay: some View {
+    private var currentAppWindowOverlay: some View {
         VStack(spacing: 12) {
-            workspaceSearchSurface
+            if let selectedApp = appState.selectedApp {
+                CurrentAppHeader(app: selectedApp)
 
-            if showSearchResults {
-                HStack(alignment: .top, spacing: 16) {
-                    SearchResultsListView(
-                        results: appState.searchResults,
-                        selectedIndex: appState.selectedSearchIndex,
-                        onResultClicked: { index in
-                            appState.selectedSearchIndex = index
-                            if let result = appState.selectedSearchResult,
-                               let windowIndex = result.targetWindowIndex {
-                                appState.selectedWindowIndex = windowIndex
-                            }
-                            confirmSelection()
-                        }
-                    )
-                    .padding(14)
-                    .frame(width: 330)
-                    .background(
-                        GlassBackground(
-                            cornerRadius: 18,
-                            tintOpacity: 0.045,
-                            strokeOpacity: 0.08,
-                            shadowOpacity: 0.08,
-                            shadowRadius: 14,
-                            shadowYOffset: 8
-                        )
-                    )
-
-                    if let selectedApp = appState.selectedApp {
-                        VStack(spacing: 10) {
-                            WindowListView(
-                                app: selectedApp,
-                                selectedWindowIndex: appState.selectedWindowIndex,
-                                presentationMode: .workspace,
-                                onWindowHovered: { index in
-                                    guard appState.shouldProcessMouseInput else { return }
-                                    appState.selectedWindowIndex = index
-                                },
-                                onWindowClicked: { index in
-                                    appState.selectedWindowIndex = index
-                                    confirmSelection()
-                                }
-                            )
-
-                            WorkspaceContextStrip(app: selectedApp)
-                        }
-                        .frame(maxWidth: .infinity)
+                WindowListView(
+                    app: selectedApp,
+                    selectedWindowIndex: appState.selectedWindowIndex,
+                    presentationMode: .workspace,
+                    onWindowHovered: { index in
+                        guard appState.shouldProcessMouseInput else { return }
+                        appState.selectedWindowIndex = index
+                    },
+                    onWindowClicked: { index in
+                        appState.selectedWindowIndex = index
+                        confirmSelection()
+                    }
+                )
+                .onContinuousHover { phase in
+                    if case .active = phase {
+                        appState.markMouseNavigation(at: NSEvent.mouseLocation)
                     }
                 }
-                .frame(maxWidth: calculateWidth())
-            } else if appState.isResourceMonitorActive {
-                ResourceMonitorView(
-                    entries: appState.resourceEntries,
-                    systemMemory: appState.systemMemory,
-                    systemCPU: appState.systemCPU,
-                    cpuTemperature: appState.cpuTemperature,
-                    thermalState: appState.thermalState,
-                    cpuHistory: appState.cpuHistory,
-                    memoryHistory: appState.memoryHistory,
-                    aiInsight: appState.aiInsight,
-                    aiInsightLoading: appState.aiInsightLoading,
-                    ollamaAvailable: appState.ollamaAvailable,
-                    isEHoldActive: appState.isEHoldActive,
-                    eHoldProgress: appState.eHoldProgress,
-                    isGroupingEnabled: appState.isProcessGroupingEnabled,
-                    onRefreshInsight: { appState.refreshAIInsight() }
+            }
+        }
+        .padding(.vertical, 10)
+    }
+
+    private var globalWindowSearchOverlay: some View {
+        VStack(spacing: 12) {
+            SearchBarView(
+                searchQuery: $appState.searchQuery,
+                isFocused: $isSearchFocused,
+                onSubmit: {
+                    confirmSelection()
+                }
+            )
+            .frame(width: min(calculateWidth() - 220, 560))
+
+            HStack(alignment: .top, spacing: 16) {
+                SearchResultsListView(
+                    results: appState.searchResults,
+                    selectedIndex: appState.selectedSearchIndex,
+                    onResultClicked: { index in
+                        appState.selectedSearchIndex = index
+                        if let result = appState.selectedSearchResult,
+                           let windowIndex = result.targetWindowIndex {
+                            appState.selectedWindowIndex = windowIndex
+                        }
+                        confirmSelection()
+                    }
                 )
-                .padding(16)
+                .padding(14)
+                .frame(width: 330)
                 .background(
                     GlassBackground(
-                        cornerRadius: 20,
-                        tintOpacity: 0.055,
-                        strokeOpacity: 0.09,
-                        shadowOpacity: 0.10,
-                        shadowRadius: 18,
-                        shadowYOffset: 10
+                        cornerRadius: 18,
+                        tintOpacity: 0.045,
+                        strokeOpacity: 0.08,
+                        shadowOpacity: 0.08,
+                        shadowRadius: 14,
+                        shadowYOffset: 8
                     )
                 )
-                .frame(maxWidth: 620)
-            } else {
+
                 if let selectedApp = appState.selectedApp {
                     WindowListView(
                         app: selectedApp,
-                        selectedWindowIndex: appState.selectedWindowIndex,
+                        selectedWindowIndex: selectedPreviewWindowIndex,
                         presentationMode: .workspace,
                         onWindowHovered: { index in
                             guard appState.shouldProcessMouseInput else { return }
@@ -151,23 +140,16 @@ struct SwitcherView: View {
                             confirmSelection()
                         }
                     )
-                    .onContinuousHover { phase in
-                        if case .active = phase {
-                            appState.markMouseNavigation(at: NSEvent.mouseLocation)
-                        }
-                    }
-
-                    WorkspaceContextStrip(app: selectedApp)
+                    .frame(maxWidth: .infinity)
                 }
-
-                appRail
             }
-
-            if !appState.isResourceMonitorActive {
-                workspaceCommandStrip
-            }
+            .frame(maxWidth: calculateWidth())
         }
         .padding(.vertical, 10)
+    }
+
+    private var selectedPreviewWindowIndex: Int {
+        appState.selectedSearchResult?.targetWindowIndex ?? appState.selectedWindowIndex
     }
 
     @ViewBuilder
@@ -292,7 +274,15 @@ struct SwitcherView: View {
         let appCount = appState.filteredApplications.count
 
         if appState.presentationMode == .nativePreview {
-            return appState.selectedApp?.hasMultipleWindows == true ? 980 : 620
+            return nativePreviewWidth(for: appState.selectedApp?.windows.count ?? 1)
+        }
+
+        if isPinnedWindowSearch {
+            return 1040
+        }
+
+        if appState.workspaceMode == .currentAppWindows {
+            return nativePreviewWidth(for: appState.selectedApp?.windows.count ?? 1)
         }
 
         if showSearchResults {
@@ -315,6 +305,26 @@ struct SwitcherView: View {
         let baseWidth = CGFloat(idealItemsPerRow) * 58 + 120
 
         return min(max(baseWidth, 780), 1040)
+    }
+
+    private func nativePreviewWidth(for windowCount: Int) -> CGFloat {
+        let screenWidth = NSScreen.main?.visibleFrame.width ?? 1440
+        let maximumWidth = min(screenWidth * 0.92, 1320)
+
+        let idealWidth: CGFloat
+        switch windowCount {
+        case 0...1:
+            idealWidth = 620
+        case 2:
+            idealWidth = 900
+        case 3:
+            idealWidth = 1180
+        default:
+            idealWidth = 1240
+        }
+
+        let minimumWidth = min(620, maximumWidth)
+        return max(minimumWidth, min(idealWidth, maximumWidth))
     }
 
     private func confirmSelection() {
@@ -351,6 +361,40 @@ private struct NativeContextStrip: View {
                 tintOpacity: 0.035,
                 strokeOpacity: 0.055,
                 shadowOpacity: 0.06,
+                shadowRadius: 10,
+                shadowYOffset: 5
+            )
+        )
+    }
+}
+
+private struct CurrentAppHeader: View {
+    let app: ApplicationModel
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(nsImage: app.icon)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 24, height: 24)
+                .cornerRadius(6)
+
+            Text(app.name)
+                .font(.system(size: 13, weight: .semibold))
+                .lineLimit(1)
+
+            Text("\(app.windows.filter { !$0.isWindowlessPlaceholder }.count) windows")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 7)
+        .background(
+            GlassBackground(
+                cornerRadius: 14,
+                tintOpacity: 0.03,
+                strokeOpacity: 0.055,
+                shadowOpacity: 0.055,
                 shadowRadius: 10,
                 shadowYOffset: 5
             )
@@ -538,4 +582,7 @@ extension Notification.Name {
     static let activationModifierChanged = Notification.Name("activationModifierChanged")
     static let openPreferences = Notification.Name("openPreferences")
     static let activateSwitcherSearch = Notification.Name("activateSwitcherSearch")
+    static let workspaceWindowActivated = Notification.Name("workspaceWindowActivated")
+    static let reinstallEventTap = Notification.Name("reinstallEventTap")
+    static let openPermissions = Notification.Name("openPermissions")
 }

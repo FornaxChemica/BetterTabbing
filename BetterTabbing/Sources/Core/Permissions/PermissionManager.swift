@@ -1,6 +1,7 @@
 import CoreGraphics
 import AppKit
 import ApplicationServices
+import IOKit.hid
 
 actor PermissionManager {
     static let shared = PermissionManager()
@@ -39,31 +40,29 @@ actor PermissionManager {
         )
     }
 
-    func requestPermissions() async {
-        let status = checkStatus()
-
-        if !status.inputMonitoring {
-            requestInputMonitoring()
-        }
-
-        if !status.accessibility {
-            requestAccessibility()
-        }
-
-        if !status.screenRecording {
-            print("[PermissionManager] Screen Recording will be requested when window previews are first used")
+    @discardableResult
+    func request(_ permission: Permission) async -> Bool {
+        switch permission {
+        case .inputMonitoring:
+            return requestInputMonitoring()
+        case .accessibility:
+            return await requestAccessibility()
+        case .screenRecording:
+            return await requestScreenRecording()
         }
     }
 
     // MARK: - Input Monitoring
 
     private func checkInputMonitoring() -> Bool {
-        return CGPreflightListenEventAccess()
+        IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
     }
 
-    private func requestInputMonitoring() {
-        let granted = CGRequestListenEventAccess()
+    @discardableResult
+    private func requestInputMonitoring() -> Bool {
+        let granted = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
         print("[PermissionManager] Input Monitoring request result: \(granted)")
+        return granted || checkInputMonitoring()
     }
 
     // MARK: - Accessibility
@@ -72,18 +71,34 @@ actor PermissionManager {
         return AXIsProcessTrusted()
     }
 
-    private func requestAccessibility() {
-        // Create the prompt key string directly to avoid Swift 6 concurrency issues
-        let promptKey = "AXTrustedCheckOptionPrompt" as CFString
-        let options = [promptKey: true] as CFDictionary
-        let _ = AXIsProcessTrustedWithOptions(options)
+    @discardableResult
+    private func requestAccessibility() async -> Bool {
+        let trusted = await MainActor.run {
+            // Create the prompt key string directly to avoid Swift 6 concurrency issues.
+            let promptKey = "AXTrustedCheckOptionPrompt" as CFString
+            let options = [promptKey: true] as CFDictionary
+            let _ = AXIsProcessTrustedWithOptions(options)
+            return AXIsProcessTrusted()
+        }
+
         print("[PermissionManager] Accessibility permission requested")
+        return trusted || checkAccessibility()
     }
 
     // MARK: - Screen Recording
 
     private func checkScreenRecording() -> Bool {
         CGPreflightScreenCaptureAccess()
+    }
+
+    @discardableResult
+    private func requestScreenRecording() async -> Bool {
+        let granted = await MainActor.run {
+            CGRequestScreenCaptureAccess()
+        }
+
+        print("[PermissionManager] Screen Recording request result: \(granted)")
+        return granted || checkScreenRecording()
     }
 
     func requestScreenRecordingIfNeeded() async -> Bool {
@@ -96,17 +111,12 @@ actor PermissionManager {
         }
 
         hasRequestedScreenRecordingThisLaunch = true
-        let granted = await MainActor.run {
-            CGRequestScreenCaptureAccess()
-        }
-
-        print("[PermissionManager] Screen Recording request result: \(granted)")
-        return granted || checkScreenRecording()
+        return await requestScreenRecording()
     }
 
     // MARK: - Open System Preferences
 
-    func openSystemPreferences(for permission: Permission) {
+    func openSystemPreferences(for permission: Permission) async {
         let urlString: String
         switch permission {
         case .inputMonitoring:
@@ -117,8 +127,10 @@ actor PermissionManager {
             urlString = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
         }
 
-        if let url = URL(string: urlString) {
-            NSWorkspace.shared.open(url)
+        await MainActor.run {
+            if let url = URL(string: urlString) {
+                NSWorkspace.shared.open(url)
+            }
         }
     }
 }

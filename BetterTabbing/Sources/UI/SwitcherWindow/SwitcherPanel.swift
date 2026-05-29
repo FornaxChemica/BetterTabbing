@@ -139,9 +139,23 @@ final class SwitcherPanel: NSPanel {
         if appState.presentationMode == .nativePreview {
             let windowCount = appState.selectedApp?.windows.count ?? 1
             return CGSize(
-                width: windowCount > 1 ? 980 : 620,
+                width: nativePreviewWidth(for: windowCount, on: associatedScreen ?? NSScreen.main),
                 height: 362
             )
+        }
+
+        if appState.presentationMode == .workspace,
+           appState.workspaceMode == .currentAppWindows {
+            let windowCount = appState.selectedApp?.windows.count ?? 1
+            return CGSize(
+                width: nativePreviewWidth(for: windowCount, on: associatedScreen ?? NSScreen.main),
+                height: 362
+            )
+        }
+
+        if appState.presentationMode == .workspace,
+           appState.workspaceMode == .globalWindowSearch {
+            return CGSize(width: 1040, height: 430)
         }
 
         // Check if showing search results
@@ -193,34 +207,71 @@ final class SwitcherPanel: NSPanel {
         return CGSize(width: width, height: searchBarHeight + contentHeight)
     }
 
+    private func nativePreviewWidth(for windowCount: Int, on screen: NSScreen?) -> CGFloat {
+        let screenWidth = screen?.visibleFrame.width ?? screen?.frame.width ?? 1440
+        let maximumWidth = min(screenWidth * 0.92, 1320)
+
+        let idealWidth: CGFloat
+        switch windowCount {
+        case 0...1:
+            idealWidth = 620
+        case 2:
+            idealWidth = 900
+        case 3:
+            idealWidth = 1180
+        default:
+            idealWidth = 1240
+        }
+
+        let minimumWidth = min(620, maximumWidth)
+        return max(minimumWidth, min(idealWidth, maximumWidth))
+    }
+
+    private func maximumPanelWidth(on screen: NSScreen, mode: SwitcherPresentationMode) -> CGFloat {
+        switch mode {
+        case .nativePreview:
+            return min(screen.visibleFrame.width * 0.92, 1320)
+        case .workspace:
+            return min(screen.frame.width * 0.88, 1040)
+        }
+    }
+
     private func recenterIfVisible() {
         guard isVisible, let screen = associatedScreen ?? NSScreen.main ?? NSScreen.screens.first else { return }
 
         // Get the intrinsic size from SwiftUI content
-        let fittingSize = hostingView?.fittingSize ?? calculateCurrentSize()
+        let fittingSize = presentationMode == .nativePreview ? calculateCurrentSize() : (hostingView?.fittingSize ?? calculateCurrentSize())
 
         // Apply screen bounds
-        let maxWidth: CGFloat = min(screen.frame.width * 0.88, 1040)
+        let maxWidth = maximumPanelWidth(on: screen, mode: presentationMode)
         let maxHeight: CGFloat = min(screen.frame.height * 0.85, 800)
         let panelSize = CGSize(
             width: min(fittingSize.width, maxWidth),
             height: min(fittingSize.height, maxHeight)
         )
 
-        // Keep the top of the grid anchored - the panel grows/shrinks from the top
-        // When search bar appears, panel grows upward (top goes up)
-        // The grid stays at gridTopY
-        let origin = CGPoint(
-            x: screen.frame.midX - panelSize.width / 2,
-            y: gridTopY - panelSize.height  // Anchor to the stored grid top position
-        )
+        // Keep workspace growth anchored to the grid. Native Cmd+Tab previews follow
+        // the currently selected Dock switcher item when AX exposes its frame.
+        let origin = presentationMode == .nativePreview
+            ? originForPanel(size: panelSize, on: screen, mode: presentationMode)
+            : CGPoint(
+                x: screen.frame.midX - panelSize.width / 2,
+                y: gridTopY - panelSize.height
+            )
 
         let newFrame = CGRect(origin: origin, size: panelSize)
+        let expectedNativeGeneration = presentationMode == .nativePreview ? AppState.shared.nativeSelectionGeneration : nil
 
         // Defer frame change to next run loop iteration to avoid constraint conflicts
         // during the current layout cycle
         DispatchQueue.main.async { [weak self] in
             guard let self = self, self.isVisible else { return }
+            guard self.canCommitLayout(expectedNativeGeneration: expectedNativeGeneration) else { return }
+
+            if self.presentationMode == .nativePreview {
+                self.setFrame(newFrame, display: true)
+                return
+            }
 
             // Animate the frame change for search bar
             NSAnimationContext.runAnimationGroup { context in
@@ -236,22 +287,25 @@ final class SwitcherPanel: NSPanel {
         guard isVisible, let screen = associatedScreen ?? NSScreen.main ?? NSScreen.screens.first else { return }
 
         // Get the intrinsic size from SwiftUI content
-        let fittingSize = hostingView?.fittingSize ?? calculateCurrentSize()
+        let fittingSize = presentationMode == .nativePreview ? calculateCurrentSize() : (hostingView?.fittingSize ?? calculateCurrentSize())
 
         // Apply screen bounds
-        let maxWidth: CGFloat = min(screen.frame.width * 0.88, 1040)
+        let maxWidth = maximumPanelWidth(on: screen, mode: presentationMode)
         let maxHeight: CGFloat = min(screen.frame.height * 0.85, 800)
         let panelSize = CGSize(
             width: min(fittingSize.width, maxWidth),
             height: min(fittingSize.height, maxHeight)
         )
 
-        // Keep top anchored - only the bottom changes
+        // Keep workspace top anchored. Native Cmd+Tab previews follow the selected
+        // native switcher item if the Dock exposes one.
         let currentTop = frame.origin.y + frame.size.height
-        let origin = CGPoint(
-            x: screen.frame.midX - panelSize.width / 2,
-            y: currentTop - panelSize.height  // Keep top fixed, grow downward
-        )
+        let origin = presentationMode == .nativePreview
+            ? originForPanel(size: panelSize, on: screen, mode: presentationMode)
+            : CGPoint(
+                x: screen.frame.midX - panelSize.width / 2,
+                y: currentTop - panelSize.height
+            )
 
         // Set frame instantly (no animation) - SwiftUI will animate the content
         setFrame(CGRect(origin: origin, size: panelSize), display: true)
@@ -263,6 +317,82 @@ final class SwitcherPanel: NSPanel {
 
     private func verticalOffset(for mode: SwitcherPresentationMode) -> CGFloat {
         mode == .nativePreview ? 170 : 40
+    }
+
+    private func originForPanel(size panelSize: CGSize, on screen: NSScreen, mode: SwitcherPresentationMode) -> CGPoint {
+        if mode == .nativePreview,
+           let anchorFrame = nativeSelectionAnchorFrame(on: screen) {
+            return anchoredNativeOrigin(panelSize: panelSize, anchorFrame: anchorFrame, screen: screen)
+        }
+
+        return CGPoint(
+            x: screen.frame.midX - panelSize.width / 2,
+            y: screen.frame.midY - panelSize.height / 2 + verticalOffset(for: mode)
+        )
+    }
+
+    private func nativeSelectionAnchorFrame(on screen: NSScreen) -> CGRect? {
+        guard let frame = AppState.shared.nativeSelectedItemFrame,
+              frame.width > 1,
+              frame.height > 1 else {
+            return nil
+        }
+
+        if screen.frame.intersects(frame) || screen.frame.contains(CGPoint(x: frame.midX, y: frame.midY)) {
+            return frame
+        }
+
+        // Accessibility screen frames are normally AppKit screen coordinates. Keep
+        // a flipped fallback so anchoring survives AX providers that report top-left
+        // display coordinates.
+        let flippedFrame = CGRect(
+            x: frame.origin.x,
+            y: screen.frame.maxY - (frame.origin.y - screen.frame.minY) - frame.height,
+            width: frame.width,
+            height: frame.height
+        )
+
+        if screen.frame.intersects(flippedFrame) || screen.frame.contains(CGPoint(x: flippedFrame.midX, y: flippedFrame.midY)) {
+            return flippedFrame
+        }
+
+        return nil
+    }
+
+    private func anchoredNativeOrigin(panelSize: CGSize, anchorFrame: CGRect, screen: NSScreen) -> CGPoint {
+        let visibleFrame = screen.visibleFrame
+        let margin: CGFloat = 24
+        let anchorGap: CGFloat = 28
+        let minX = visibleFrame.minX + margin
+        let maxX = visibleFrame.maxX - panelSize.width - margin
+        let x = clamped(anchorFrame.midX - panelSize.width / 2, min: minX, max: maxX)
+
+        let aboveY = anchorFrame.maxY + anchorGap
+        let belowY = anchorFrame.minY - panelSize.height - anchorGap
+        let minY = visibleFrame.minY + margin
+        let maxY = visibleFrame.maxY - panelSize.height - margin
+
+        if aboveY <= maxY {
+            return CGPoint(x: x, y: clamped(aboveY, min: minY, max: maxY))
+        }
+
+        if belowY >= minY {
+            return CGPoint(x: x, y: clamped(belowY, min: minY, max: maxY))
+        }
+
+        let centeredY = screen.frame.midY - panelSize.height / 2 + verticalOffset(for: .nativePreview)
+        return CGPoint(x: x, y: clamped(centeredY, min: minY, max: maxY))
+    }
+
+    private func clamped(_ value: CGFloat, min lowerBound: CGFloat, max upperBound: CGFloat) -> CGFloat {
+        guard lowerBound <= upperBound else { return lowerBound }
+        return Swift.min(Swift.max(value, lowerBound), upperBound)
+    }
+
+    private func canCommitLayout(expectedNativeGeneration: UInt64?) -> Bool {
+        guard let expectedNativeGeneration else { return true }
+        return presentationMode == .nativePreview
+            && AppState.shared.nativeSelectionGeneration == expectedNativeGeneration
     }
 
     // MARK: - Public Methods
@@ -292,18 +422,14 @@ final class SwitcherPanel: NSPanel {
         let fittingSize = hostingView?.fittingSize ?? calculateCurrentSize()
 
         // Apply screen bounds
-        let maxWidth: CGFloat = min(screen.frame.width * 0.88, 1040)
+        let maxWidth = maximumPanelWidth(on: screen, mode: mode)
         let maxHeight: CGFloat = min(screen.frame.height * 0.85, 800)
         let panelSize = CGSize(
             width: min(fittingSize.width, maxWidth),
             height: min(fittingSize.height, maxHeight)
         )
 
-        // Center on screen, slightly above center for aesthetic
-        let origin = CGPoint(
-            x: screen.frame.midX - panelSize.width / 2,
-            y: screen.frame.midY - panelSize.height / 2 + verticalOffset(for: mode)
-        )
+        let origin = originForPanel(size: panelSize, on: screen, mode: mode)
         setFrame(CGRect(origin: origin, size: panelSize), display: true)
 
         // Store the top of the grid as anchor point (top of panel since no search bar initially)
@@ -335,18 +461,14 @@ final class SwitcherPanel: NSPanel {
         let fittingSize = hostingView?.fittingSize ?? calculateCurrentSize()
 
         // Apply screen bounds
-        let maxWidth: CGFloat = min(screen.frame.width * 0.88, 1040)
+        let maxWidth = maximumPanelWidth(on: screen, mode: mode)
         let maxHeight: CGFloat = min(screen.frame.height * 0.85, 800)
         let panelSize = CGSize(
             width: min(fittingSize.width, maxWidth),
             height: min(fittingSize.height, maxHeight)
         )
 
-        // Center on screen, slightly above center
-        let origin = CGPoint(
-            x: screen.frame.midX - panelSize.width / 2,
-            y: screen.frame.midY - panelSize.height / 2 + verticalOffset(for: mode)
-        )
+        let origin = originForPanel(size: panelSize, on: screen, mode: mode)
         setFrame(CGRect(origin: origin, size: panelSize), display: true)
 
         // Store the top of the grid as anchor point (top of panel since no search bar initially)
@@ -379,18 +501,14 @@ final class SwitcherPanel: NSPanel {
         let fittingSize = hostingView?.fittingSize ?? calculateCurrentSize()
 
         // Apply screen bounds
-        let maxWidth: CGFloat = min(screen.frame.width * 0.88, 1040)
+        let maxWidth = maximumPanelWidth(on: screen, mode: mode)
         let maxHeight: CGFloat = min(screen.frame.height * 0.85, 800)
         let panelSize = CGSize(
             width: min(fittingSize.width, maxWidth),
             height: min(fittingSize.height, maxHeight)
         )
 
-        // Center on screen, slightly above center for spatial preview continuity.
-        let origin = CGPoint(
-            x: screen.frame.midX - panelSize.width / 2,
-            y: screen.frame.midY - panelSize.height / 2 + verticalOffset(for: mode)
-        )
+        let origin = originForPanel(size: panelSize, on: screen, mode: mode)
         setFrame(CGRect(origin: origin, size: panelSize), display: true)
 
         // Store the top of the grid as anchor point
@@ -545,10 +663,31 @@ final class SwitcherPanel: NSPanel {
         // Then switch synchronously
         if app.windows.indices.contains(windowIndex) {
             let window = app.windows[windowIndex]
+            postWorkspaceWindowActivationIfNeeded(app: app, window: window, windowIndex: windowIndex)
             WindowSwitcher.shared.switchTo(window: window, in: app, windowIndex: windowIndex)
         } else {
             WindowSwitcher.shared.activate(app: app)
         }
+    }
+
+    private func postWorkspaceWindowActivationIfNeeded(
+        app: ApplicationModel,
+        window: WindowModel,
+        windowIndex: Int
+    ) {
+        guard AppState.shared.presentationMode == .workspace,
+              !window.isWindowlessPlaceholder else {
+            return
+        }
+
+        NotificationCenter.default.post(
+            name: .workspaceWindowActivated,
+            object: nil,
+            userInfo: [
+                "pid": app.pid,
+                "windowIndex": windowIndex
+            ]
+        )
     }
 
     override func keyDown(with event: NSEvent) {
@@ -566,6 +705,7 @@ final class SwitcherPanel: NSPanel {
         guard AppState.shared.presentationMode == .workspace else { return false }
 
         let isShiftPressed = event.modifierFlags.contains(.shift)
+        let isCommandPressed = event.modifierFlags.contains(.command)
         switch Int(event.keyCode) {
         case kVK_Escape:
             SwitcherPanelManager.shared.hide()
@@ -577,18 +717,39 @@ final class SwitcherPanel: NSPanel {
                 NotificationCenter.default.post(name: .activateSwitcherSearch, object: nil)
             }
             return true
+        case kVK_Space, kVK_ANSI_Slash:
+            guard !AppState.shared.isSearchActive else { return false }
+            AppState.shared.pinWorkspaceSearch()
+            SwitcherPanelManager.shared.activateSearch()
+            return true
+        case kVK_ANSI_1 where isCommandPressed:
+            AppState.shared.setWorkspaceSearchScope(.currentApp)
+            return true
+        case kVK_ANSI_2 where isCommandPressed:
+            AppState.shared.setWorkspaceSearchScope(.allWindows)
+            return true
         case kVK_Tab:
             if AppState.shared.isSearchActive && !AppState.shared.searchQuery.isEmpty {
                 isShiftPressed ? AppState.shared.selectPreviousApp() : AppState.shared.selectNextApp()
+            } else if AppState.shared.workspaceMode == .currentAppWindows {
+                isShiftPressed ? AppState.shared.selectPreviousWindow() : AppState.shared.selectNextWindow()
             } else {
                 isShiftPressed ? AppState.shared.selectPreviousApp() : AppState.shared.selectNextApp()
             }
             return true
         case kVK_LeftArrow:
-            AppState.shared.selectPreviousApp()
+            if AppState.shared.workspaceMode == .currentAppWindows {
+                AppState.shared.selectPreviousWindow()
+            } else {
+                AppState.shared.selectPreviousApp()
+            }
             return true
         case kVK_RightArrow:
-            AppState.shared.selectNextApp()
+            if AppState.shared.workspaceMode == .currentAppWindows {
+                AppState.shared.selectNextWindow()
+            } else {
+                AppState.shared.selectNextApp()
+            }
             return true
         case kVK_UpArrow:
             if AppState.shared.isSearchActive && !AppState.shared.searchQuery.isEmpty {

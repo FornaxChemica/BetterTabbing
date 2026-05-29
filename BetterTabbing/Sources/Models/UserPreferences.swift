@@ -53,18 +53,60 @@ struct UserPreferences: Codable {
 
     // MARK: - Persistence
 
-    private static let key = "BetterTabbingPreferences"
+    private static let key = "WindowLensPreferences"
+    private static let legacyKey = "BetterTabbingPreferences"
+    private static let legacyBundleIdentifier = "com.fornaxchemica.bettertabbing"
 
     static func load() -> UserPreferences {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let prefs = try? JSONDecoder().decode(UserPreferences.self, from: data) else {
-            return UserPreferences()
+        let defaults = UserDefaults.standard
+        if let data = defaults.data(forKey: key),
+           let prefs = try? JSONDecoder().decode(UserPreferences.self, from: data) {
+            return prefs
         }
-        return prefs
+
+        if let legacyData = defaults.data(forKey: legacyKey),
+           let legacyPrefs = try? JSONDecoder().decode(UserPreferences.self, from: legacyData) {
+            defaults.set(legacyData, forKey: key)
+            return legacyPrefs
+        }
+
+        if let migratedPrefs = migrateFromLegacyDefaults(to: defaults) {
+            return migratedPrefs
+        }
+
+        return UserPreferences()
     }
 
     func save() {
         guard let data = try? JSONEncoder().encode(self) else { return }
         UserDefaults.standard.set(data, forKey: UserPreferences.key)
+    }
+
+    private static func migrateFromLegacyDefaults(to defaults: UserDefaults) -> UserPreferences? {
+        let legacyDefaults = UserDefaults(suiteName: legacyBundleIdentifier)
+        let candidates: [Data?] = [
+            legacyDefaults?.data(forKey: key),
+            legacyDefaults?.data(forKey: legacyKey),
+            legacyPersistentDomainData(forKey: key),
+            legacyPersistentDomainData(forKey: legacyKey)
+        ]
+
+        for candidate in candidates {
+            guard let data = candidate,
+                  let prefs = try? JSONDecoder().decode(UserPreferences.self, from: data) else {
+                continue
+            }
+
+            defaults.set(data, forKey: key)
+            print("[UserPreferences] Migrated preferences from legacy BetterTabbing defaults")
+            return prefs
+        }
+
+        return nil
+    }
+
+    private static func legacyPersistentDomainData(forKey key: String) -> Data? {
+        UserDefaults.standard
+            .persistentDomain(forName: legacyBundleIdentifier)?[key] as? Data
     }
 }

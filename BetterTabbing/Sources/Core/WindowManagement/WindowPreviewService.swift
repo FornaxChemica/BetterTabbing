@@ -5,16 +5,28 @@ import ScreenCaptureKit
 final class WindowPreviewUpdate {
     let windowID: CGWindowID
     let ownerPID: pid_t?
+    let previewIdentity: PreviewIdentity
     let title: String
     let bounds: CGRect
     let image: NSImage
+    let selectionGeneration: UInt64?
 
-    init(windowID: CGWindowID, ownerPID: pid_t?, title: String, bounds: CGRect, image: NSImage) {
+    init(
+        windowID: CGWindowID,
+        ownerPID: pid_t?,
+        previewIdentity: PreviewIdentity,
+        title: String,
+        bounds: CGRect,
+        image: NSImage,
+        selectionGeneration: UInt64? = nil
+    ) {
         self.windowID = windowID
         self.ownerPID = ownerPID
+        self.previewIdentity = previewIdentity
         self.title = title
         self.bounds = bounds
         self.image = image
+        self.selectionGeneration = selectionGeneration
     }
 }
 
@@ -25,17 +37,21 @@ final class WindowPreviewService: @unchecked Sendable {
     private let cache = NSCache<NSString, NSImage>()
     private let lock = NSLock()
     private var inFlightPreviewKeys = Set<String>()
+    private let previewImageStore = PreviewImageStore()
+    private let captureLimiter = CaptureLimiter(limit: 2)
 
-    private let isPreviewDebugLoggingEnabled = true
+    private let isPreviewDebugLoggingEnabled = false
     private static let maximumPixelSize = CGSize(width: 1400, height: 900)
 
     private struct PreviewRequest: Sendable {
         let windowID: CGWindowID
         let ownerPID: pid_t?
+        let previewIdentity: PreviewIdentity
         let appName: String?
         let title: String
         let bounds: CGRect
-        let cacheKey: String
+        let inFlightKey: String
+        let selectionGeneration: UInt64?
 
         var sourceSize: CGSize { bounds.size }
     }
@@ -43,6 +59,26 @@ final class WindowPreviewService: @unchecked Sendable {
     private init() {
         cache.countLimit = 80
         cache.totalCostLimit = 64 * 1024 * 1024
+        previewImageStore.cleanup(maximumImageCount: 200, maximumAge: 7 * 24 * 60 * 60)
+    }
+
+    func cachedPreview(
+        for identity: PreviewIdentity
+    ) -> NSImage? {
+        for key in identity.cacheKeys {
+            if let image = cache.object(forKey: key as NSString) {
+                log("memory cache hit key=\(key)")
+                return image
+            }
+        }
+
+        if let image = previewImageStore.image(for: identity) {
+            log("disk cache hit key=\(identity.stableKey)")
+            storeInMemory(image, for: identity)
+            return image
+        }
+
+        return nil
     }
 
     func cachedPreview(
@@ -51,50 +87,80 @@ final class WindowPreviewService: @unchecked Sendable {
         title: String? = nil,
         bounds: CGRect = .zero
     ) -> NSImage? {
-        let key = cacheKey(
-            for: windowID,
-            ownerPID: ownerPID,
-            title: title,
-            bounds: bounds
+        cachedPreview(
+            for: PreviewIdentity(
+                ownerPID: ownerPID,
+                bundleIdentifier: nil,
+                cgWindowID: windowID,
+                title: title ?? "",
+                bounds: bounds
+            )
         )
-        let image = cache.object(forKey: key as NSString)
-        if image != nil {
-            log("cache hit key=\(key)")
-        }
-        return image
     }
 
-    func requestPreview(for window: WindowModel, ownerPID: pid_t? = nil, appName: String? = nil) {
-        requestPreviews(for: [window], ownerPID: ownerPID, appName: appName)
+    func cachedPreview(
+        for windowID: CGWindowID,
+        ownerPID: pid_t? = nil,
+        bundleIdentifier: String?,
+        title: String? = nil,
+        bounds: CGRect = .zero,
+        axIndex: Int? = nil,
+        hasReliableWindowID: Bool = true
+    ) -> NSImage? {
+        cachedPreview(
+            for: PreviewIdentity(
+                ownerPID: ownerPID,
+                bundleIdentifier: bundleIdentifier,
+                cgWindowID: windowID,
+                axIndex: axIndex,
+                title: title ?? "",
+                bounds: bounds,
+                hasReliableCGWindowID: hasReliableWindowID
+            )
+        )
     }
 
-    func requestPreviews(for windows: [WindowModel], ownerPID: pid_t? = nil, appName: String? = nil) {
+    func requestPreview(
+        for window: WindowModel,
+        ownerPID: pid_t? = nil,
+        appName: String? = nil,
+        selectionGeneration: UInt64? = nil
+    ) {
+        requestPreviews(
+            for: [window],
+            ownerPID: ownerPID,
+            appName: appName,
+            selectionGeneration: selectionGeneration
+        )
+    }
+
+    func requestPreviews(
+        for windows: [WindowModel],
+        ownerPID: pid_t? = nil,
+        appName: String? = nil,
+        selectionGeneration: UInt64? = nil
+    ) {
         var requests: [PreviewRequest] = []
 
         for window in windows {
+            guard !window.isWindowlessPlaceholder else { continue }
+
             let windowID = window.windowID
+            let identity = requestIdentity(for: window, ownerPID: ownerPID)
+            let resolvedOwnerPID = ownerPID ?? identity.ownerPID
+            let inFlightKey = inFlightKey(for: identity)
 
-            let key = cacheKey(
-                for: windowID,
-                ownerPID: ownerPID,
-                title: window.title,
-                bounds: window.bounds
-            )
-
-            if let cachedImage = cachedPreview(
-                for: windowID,
-                ownerPID: ownerPID,
-                title: window.title,
-                bounds: window.bounds
-            ) {
+            if let cachedImage = cachedPreview(for: identity) {
                 log("posting cached preview id=\(windowID) title=\(window.title)")
                 postPreview(cachedImage, for: PreviewRequest(
                     windowID: windowID,
-                    ownerPID: ownerPID,
+                    ownerPID: resolvedOwnerPID,
+                    previewIdentity: identity,
                     appName: appName,
                     title: window.title,
                     bounds: window.bounds,
-                    cacheKey: key
+                    inFlightKey: inFlightKey,
+                    selectionGeneration: selectionGeneration
                 ))
                 continue
             }
@@ -106,33 +172,38 @@ final class WindowPreviewService: @unchecked Sendable {
             log("cache miss id=\(windowID) pid=\(ownerPID.map(String.init) ?? "unknown") app=\(appName ?? "unknown") title=\(window.title) capture=\(window.canCapturePreview) bounds=\(Self.describe(window.bounds))")
 
             guard window.canCapturePreview else { continue }
-            guard markInFlight(key) else {
-                log("skip in-flight id=\(windowID) title=\(window.title)")
+            guard markInFlight(inFlightKey) else {
+                log("skip in-flight id=\(windowID) title=\(window.title) generation=\(selectionGeneration.map(String.init) ?? "none")")
                 continue
             }
 
             requests.append(PreviewRequest(
                 windowID: windowID,
-                ownerPID: ownerPID,
+                ownerPID: resolvedOwnerPID,
+                previewIdentity: identity,
                 appName: appName,
                 title: window.title,
                 bounds: window.bounds,
-                cacheKey: key
+                inFlightKey: inFlightKey,
+                selectionGeneration: selectionGeneration
             ))
         }
 
         guard !requests.isEmpty else { return }
 
         log("queued \(requests.count) preview request(s): \(requests.map { String($0.windowID) }.joined(separator: ","))")
-        Task.detached(priority: .userInitiated) {
+        let priority: TaskPriority = selectionGeneration == nil ? .utility : .userInitiated
+        Task.detached(priority: priority) {
+            await self.captureLimiter.acquire()
             await self.capturePreviews(for: requests)
+            await self.captureLimiter.release()
         }
     }
 
     private func capturePreviews(for requests: [PreviewRequest]) async {
         guard await PermissionManager.shared.requestScreenRecordingIfNeeded() else {
             for request in requests {
-                clearInFlight(request.cacheKey)
+                clearInFlight(request.inFlightKey)
             }
             log("Screen Recording permission is required for window previews")
             return
@@ -141,13 +212,13 @@ final class WindowPreviewService: @unchecked Sendable {
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(
                 false,
-                onScreenWindowsOnly: true
+                onScreenWindowsOnly: false
             )
             let windowsByID = Dictionary(content.windows.map { ($0.windowID, $0) }, uniquingKeysWith: { first, _ in first })
             log("ScreenCaptureKit returned \(content.windows.count) window(s), \(content.displays.count) display(s), \(content.applications.count) app(s)")
 
             for request in requests {
-                defer { clearInFlight(request.cacheKey) }
+                defer { clearInFlight(request.inFlightKey) }
 
                 guard let window = matchWindow(for: request, windowsByID: windowsByID, allWindows: content.windows) else {
                     log("no SCWindow match for AX id=\(request.windowID) pid=\(request.ownerPID.map(String.init) ?? "unknown") app=\(request.appName ?? "unknown") title=\(request.title) bounds=\(Self.describe(request.bounds)); candidates=\(candidateSummary(for: request, in: content.windows))")
@@ -160,12 +231,24 @@ final class WindowPreviewService: @unchecked Sendable {
                         continue
                     }
 
-                    log("captured preview AX id=\(request.windowID) SC id=\(window.windowID) image=\(Int(image.size.width))x\(Int(image.size.height)) title=\(request.title)")
-                    cache.setObject(
-                        image,
-                        forKey: request.cacheKey as NSString,
-                        cost: Self.cacheCost(for: image)
-                    )
+                    let quality = Self.previewQuality(for: image)
+                    let cachedImage = cachedPreview(for: request.previewIdentity)
+                    let cachedQuality = cachedImage.map { Self.previewQuality(for: $0) }
+                    if let rejectionReason = Self.previewRejectionReason(
+                        quality: quality,
+                        cachedQuality: cachedQuality,
+                        appName: request.appName
+                    ) {
+                        log("rejected preview AX id=\(request.windowID) SC id=\(window.windowID) reason=\(rejectionReason) metrics=\(quality.debugSummary) title=\(request.title)")
+                        if let cachedImage {
+                            log("posting cached preview after rejected capture id=\(request.windowID) title=\(request.title) cachedMetrics=\(cachedQuality?.debugSummary ?? "unknown")")
+                            postPreview(cachedImage, for: request)
+                        }
+                        continue
+                    }
+
+                    log("captured preview AX id=\(request.windowID) SC id=\(window.windowID) image=\(Int(image.size.width))x\(Int(image.size.height)) metrics=\(quality.debugSummary) title=\(request.title)")
+                    storePreview(image, for: request.previewIdentity)
                     postPreview(image, for: request)
                 } catch {
                     log("capture failed AX id=\(request.windowID) matchedSC id=\(window.windowID) title=\(request.title): \(error)")
@@ -173,7 +256,7 @@ final class WindowPreviewService: @unchecked Sendable {
             }
         } catch {
             for request in requests {
-                clearInFlight(request.cacheKey)
+                clearInFlight(request.inFlightKey)
             }
             log("failed to fetch shareable content: \(error)")
         }
@@ -184,24 +267,24 @@ final class WindowPreviewService: @unchecked Sendable {
         windowsByID: [CGWindowID: SCWindow],
         allWindows: [SCWindow]
     ) -> SCWindow? {
-        if let directMatch = windowsByID[request.windowID] {
+        if request.previewIdentity.hasReliableCGWindowID, let directMatch = windowsByID[request.windowID] {
             let directPID = directMatch.owningApplication?.processID
             if request.ownerPID == nil || directPID == request.ownerPID {
-                if Self.identityMatches(window: directMatch, request: request) {
+                if Self.titleMatches(window: directMatch, request: request) {
                     log("matched by CGWindowID AX id=\(request.windowID) SC id=\(directMatch.windowID) pid=\(directPID.map(String.init) ?? "unknown") title=\(directMatch.title ?? "untitled")")
                     return directMatch
                 }
 
-                log("ignored CGWindowID match with stale identity AX id=\(request.windowID) SC id=\(directMatch.windowID) requestedTitle=\(request.title) scTitle=\(directMatch.title ?? "untitled") requestedBounds=\(Self.describe(request.bounds)) scFrame=\(Self.describe(directMatch.frame))")
+                log("ignored CGWindowID match with title mismatch AX id=\(request.windowID) SC id=\(directMatch.windowID) requestedTitle=\(request.title) scTitle=\(directMatch.title ?? "untitled") requestedBounds=\(Self.describe(request.bounds)) scFrame=\(Self.describe(directMatch.frame))")
+            } else {
+                log("ignored CGWindowID match with wrong pid AX id=\(request.windowID) requestedPID=\(request.ownerPID.map(String.init) ?? "unknown") scPID=\(directPID.map(String.init) ?? "unknown") title=\(directMatch.title ?? "untitled")")
             }
-
-            log("ignored CGWindowID match with wrong pid AX id=\(request.windowID) requestedPID=\(request.ownerPID.map(String.init) ?? "unknown") scPID=\(directPID.map(String.init) ?? "unknown") title=\(directMatch.title ?? "untitled")")
         }
 
         guard let ownerPID = request.ownerPID else { return nil }
 
         let pidCandidates = allWindows.filter { window in
-            window.owningApplication?.processID == ownerPID && window.isOnScreen
+            window.owningApplication?.processID == ownerPID
         }
         let layerCandidates = pidCandidates.filter { $0.windowLayer == 0 }
         let candidates = layerCandidates.isEmpty ? pidCandidates : layerCandidates
@@ -223,21 +306,16 @@ final class WindowPreviewService: @unchecked Sendable {
         return bestMatch.0
     }
 
-    private static func identityMatches(window: SCWindow, request: PreviewRequest) -> Bool {
+    private static func titleMatches(window: SCWindow, request: PreviewRequest) -> Bool {
         let requestTitle = normalizedTitle(request.title)
         let windowTitle = normalizedTitle(window.title ?? "")
-        if !requestTitle.isEmpty && !windowTitle.isEmpty && requestTitle != windowTitle {
-            return false
-        }
-
-        guard hasReliableBounds(request.bounds), hasReliableBounds(window.frame) else {
+        guard !requestTitle.isEmpty, !windowTitle.isEmpty else {
             return true
         }
 
-        return abs(window.frame.minX - request.bounds.minX) <= 2
-            && abs(window.frame.minY - request.bounds.minY) <= 2
-            && abs(window.frame.width - request.bounds.width) <= 2
-            && abs(window.frame.height - request.bounds.height) <= 2
+        return requestTitle == windowTitle
+            || windowTitle.contains(requestTitle)
+            || requestTitle.contains(windowTitle)
     }
 
     private func candidateSummary(for request: PreviewRequest, in windows: [SCWindow]) -> String {
@@ -271,10 +349,12 @@ final class WindowPreviewService: @unchecked Sendable {
         }
 
         let frame = window.frame
-        score += min(abs(frame.width - request.bounds.width) / 10, 40)
-        score += min(abs(frame.height - request.bounds.height) / 10, 40)
-        score += min(abs(frame.minX - request.bounds.minX) / 80, 20)
-        score += min(abs(frame.minY - request.bounds.minY) / 80, 20)
+        if hasReliableBounds(request.bounds) {
+            score += min(abs(frame.width - request.bounds.width) / 10, 40)
+            score += min(abs(frame.height - request.bounds.height) / 10, 40)
+            score += min(abs(frame.minX - request.bounds.minX) / 80, 20)
+            score += min(abs(frame.minY - request.bounds.minY) / 80, 20)
+        }
         score += CGFloat(abs(window.windowLayer)) * 20
 
         return score
@@ -306,52 +386,55 @@ final class WindowPreviewService: @unchecked Sendable {
         return true
     }
 
+    private func requestIdentity(for window: WindowModel, ownerPID: pid_t?) -> PreviewIdentity {
+        PreviewIdentity(
+            ownerPID: ownerPID ?? window.previewIdentity.ownerPID,
+            bundleIdentifier: window.previewIdentity.bundleIdentifier,
+            cgWindowID: window.windowID,
+            axIndex: window.previewIdentity.axIndex,
+            title: window.title,
+            bounds: window.bounds,
+            hasReliableCGWindowID: window.previewIdentity.hasReliableCGWindowID
+        )
+    }
+
     private func clearInFlight(_ key: String) {
         lock.lock()
         inFlightPreviewKeys.remove(key)
         lock.unlock()
     }
 
+    private func inFlightKey(for identity: PreviewIdentity) -> String {
+        identity.stableKey
+    }
+
     private func postPreview(_ image: NSImage, for request: PreviewRequest) {
-        DispatchQueue.main.async {
+        DispatchQueue.main.async(execute: {
             NotificationCenter.default.post(
                 name: .windowPreviewDidLoad,
                 object: WindowPreviewUpdate(
                     windowID: request.windowID,
                     ownerPID: request.ownerPID,
+                    previewIdentity: request.previewIdentity,
                     title: request.title,
                     bounds: request.bounds,
-                    image: image
+                    image: image,
+                    selectionGeneration: request.selectionGeneration
                 )
             )
+        })
+    }
+
+    private func storePreview(_ image: NSImage, for identity: PreviewIdentity) {
+        storeInMemory(image, for: identity)
+        previewImageStore.store(image, for: identity)
+    }
+
+    private func storeInMemory(_ image: NSImage, for identity: PreviewIdentity) {
+        let cost = Self.cacheCost(for: image)
+        for key in identity.cacheKeys {
+            cache.setObject(image, forKey: key as NSString, cost: cost)
         }
-    }
-
-    private func cacheKey(
-        for windowID: CGWindowID,
-        ownerPID: pid_t?,
-        title: String?,
-        bounds: CGRect
-    ) -> String {
-        Self.cacheKey(for: windowID, ownerPID: ownerPID, title: title, bounds: bounds)
-    }
-
-    private static func cacheKey(
-        for windowID: CGWindowID,
-        ownerPID: pid_t?,
-        title: String?,
-        bounds: CGRect
-    ) -> String {
-        let normalizedTitle = normalizedTitle(title ?? "")
-        let rectKey = [
-            Int(bounds.origin.x.rounded()),
-            Int(bounds.origin.y.rounded()),
-            Int(bounds.width.rounded()),
-            Int(bounds.height.rounded())
-        ]
-            .map(String.init)
-            .joined(separator: "x")
-        return "\(ownerPID ?? -1):\(windowID):\(normalizedTitle):\(rectKey)"
     }
 
     private static func cacheCost(for image: NSImage) -> Int {
@@ -379,6 +462,190 @@ final class WindowPreviewService: @unchecked Sendable {
             cgImage: thumbnail,
             size: NSSize(width: CGFloat(thumbnail.width), height: CGFloat(thumbnail.height))
         )
+    }
+
+    private struct PreviewQuality {
+        let averageLuma: Double
+        let variance: Double
+        let whitePixelRatio: Double
+        let blackPixelRatio: Double
+        let transparentPixelRatio: Double
+        let averageAlpha: Double
+        let edgeScore: Double
+
+        var score: Double {
+            let structure = min(1.0, variance * 42 + edgeScore * 9)
+            let solidSurfacePenalty = max(whitePixelRatio, blackPixelRatio) * 0.18
+            let alphaPenalty = transparentPixelRatio * 0.32
+            return max(0.0, min(1.0, structure + 0.08 - solidSurfacePenalty - alphaPenalty))
+        }
+
+        var debugSummary: String {
+            String(
+                format: "luma=%.3f var=%.6f white=%.2f black=%.2f transparent=%.2f alpha=%.3f edge=%.4f score=%.3f",
+                averageLuma,
+                variance,
+                whitePixelRatio,
+                blackPixelRatio,
+                transparentPixelRatio,
+                averageAlpha,
+                edgeScore,
+                score
+            )
+        }
+    }
+
+    private static func previewQuality(for image: NSImage) -> PreviewQuality {
+        var proposedRect = CGRect(origin: .zero, size: image.size)
+        guard let cgImage = image.cgImage(forProposedRect: &proposedRect, context: nil, hints: nil) else {
+            return PreviewQuality(
+                averageLuma: 1,
+                variance: 0,
+                whitePixelRatio: 1,
+                blackPixelRatio: 0,
+                transparentPixelRatio: 1,
+                averageAlpha: 0,
+                edgeScore: 0
+            )
+        }
+
+        let sampleWidth = 32
+        let sampleHeight = 32
+        let bytesPerPixel = 4
+        let bytesPerRow = sampleWidth * bytesPerPixel
+        var pixels = [UInt8](repeating: 0, count: sampleHeight * bytesPerRow)
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+
+        guard let context = CGContext(
+            data: &pixels,
+            width: sampleWidth,
+            height: sampleHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return PreviewQuality(
+                averageLuma: 0,
+                variance: 0,
+                whitePixelRatio: 0,
+                blackPixelRatio: 1,
+                transparentPixelRatio: 1,
+                averageAlpha: 0,
+                edgeScore: 0
+            )
+        }
+
+        context.interpolationQuality = .low
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: sampleWidth, height: sampleHeight))
+
+        let pixelCount = sampleWidth * sampleHeight
+        var lumaValues = [Double]()
+        lumaValues.reserveCapacity(pixelCount)
+        var alphaTotal = 0.0
+        var whitePixels = 0
+        var blackPixels = 0
+        var transparentPixels = 0
+
+        for index in stride(from: 0, to: pixels.count, by: bytesPerPixel) {
+            let red = Double(pixels[index]) / 255.0
+            let green = Double(pixels[index + 1]) / 255.0
+            let blue = Double(pixels[index + 2]) / 255.0
+            let alpha = Double(pixels[index + 3]) / 255.0
+            let luma = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+            lumaValues.append(luma)
+            alphaTotal += alpha
+
+            if alpha < 0.05 {
+                transparentPixels += 1
+            } else if luma > 0.94 {
+                whitePixels += 1
+            } else if luma < 0.06 {
+                blackPixels += 1
+            }
+        }
+
+        var edgeTotal = 0.0
+        var edgeCount = 0
+        for y in 0..<sampleHeight {
+            for x in 0..<sampleWidth {
+                let index = y * sampleWidth + x
+                let luma = lumaValues[index]
+                if x + 1 < sampleWidth {
+                    edgeTotal += abs(luma - lumaValues[index + 1])
+                    edgeCount += 1
+                }
+                if y + 1 < sampleHeight {
+                    edgeTotal += abs(luma - lumaValues[index + sampleWidth])
+                    edgeCount += 1
+                }
+            }
+        }
+
+        let averageAlpha = alphaTotal / Double(pixelCount)
+        let averageLuma = lumaValues.reduce(0, +) / Double(pixelCount)
+        let variance = lumaValues.reduce(0.0) { partial, luma in
+            let delta = luma - averageLuma
+            return partial + delta * delta
+        } / Double(pixelCount)
+
+        return PreviewQuality(
+            averageLuma: averageLuma,
+            variance: variance,
+            whitePixelRatio: Double(whitePixels) / Double(pixelCount),
+            blackPixelRatio: Double(blackPixels) / Double(pixelCount),
+            transparentPixelRatio: Double(transparentPixels) / Double(pixelCount),
+            averageAlpha: averageAlpha,
+            edgeScore: edgeCount == 0 ? 0 : edgeTotal / Double(edgeCount)
+        )
+    }
+
+    private static func previewRejectionReason(
+        quality: PreviewQuality,
+        cachedQuality: PreviewQuality?,
+        appName: String?
+    ) -> String? {
+        let isFinder = appName?.localizedCaseInsensitiveCompare("Finder") == .orderedSame
+        let whiteRatioThreshold = isFinder ? 0.76 : 0.88
+        let lowVarianceThreshold = isFinder ? 0.00034 : 0.00018
+        let lowEdgeThreshold = isFinder ? 0.018 : 0.010
+
+        if quality.averageAlpha < 0.04 || quality.transparentPixelRatio > 0.92 {
+            return String(format: "transparent alpha=%.3f transparent=%.2f", quality.averageAlpha, quality.transparentPixelRatio)
+        }
+
+        if quality.whitePixelRatio > whiteRatioThreshold && quality.edgeScore < (isFinder ? 0.030 : 0.018) {
+            return String(format: "mostly-white white=%.2f edge=%.4f", quality.whitePixelRatio, quality.edgeScore)
+        }
+
+        if quality.blackPixelRatio > 0.92 && quality.edgeScore < 0.016 {
+            return String(format: "mostly-black black=%.2f edge=%.4f", quality.blackPixelRatio, quality.edgeScore)
+        }
+
+        if quality.variance < lowVarianceThreshold && quality.edgeScore < lowEdgeThreshold {
+            return String(format: "low-detail variance=%.6f edge=%.4f", quality.variance, quality.edgeScore)
+        }
+
+        if let cachedQuality, cachedQuality.score > 0.08 {
+            let worseThanCache = quality.score < cachedQuality.score * (isFinder ? 0.56 : 0.38)
+            let lostDetail = quality.edgeScore < cachedQuality.edgeScore * 0.55
+                && quality.variance < cachedQuality.variance * 0.62
+            let finderWhiteRegression = isFinder
+                && quality.whitePixelRatio > 0.58
+                && quality.whitePixelRatio > cachedQuality.whitePixelRatio + 0.28
+
+            if worseThanCache && (lostDetail || finderWhiteRegression) {
+                return String(
+                    format: "worse-than-cache score=%.3f cached=%.3f edge=%.4f cachedEdge=%.4f",
+                    quality.score,
+                    cachedQuality.score,
+                    quality.edgeScore,
+                    cachedQuality.edgeScore
+                )
+            }
+        }
+
+        return nil
     }
 
     private static func pixelSize(for sourceSize: CGSize) -> (width: Int, height: Int) {
@@ -428,6 +695,159 @@ final class WindowPreviewService: @unchecked Sendable {
         context.interpolationQuality = .high
         context.draw(image, in: CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight))
         return context.makeImage()
+    }
+}
+
+private final class PreviewImageStore: @unchecked Sendable {
+    private let directoryURL: URL
+    private let legacyDirectoryURL: URL
+    private let fileManager: FileManager
+
+    init() {
+        let fileManager = FileManager.default
+        self.fileManager = fileManager
+        let applicationSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        self.directoryURL = applicationSupport
+            .appendingPathComponent("WindowLens", isDirectory: true)
+            .appendingPathComponent("PreviewCache", isDirectory: true)
+        self.legacyDirectoryURL = applicationSupport
+            .appendingPathComponent("BetterTabbing", isDirectory: true)
+            .appendingPathComponent("PreviewCache", isDirectory: true)
+
+        try? fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        migrateLegacyCacheIfNeeded()
+    }
+
+    func image(for identity: PreviewIdentity) -> NSImage? {
+        for key in identity.cacheKeys {
+            let url = fileURL(forKey: key)
+            guard fileManager.fileExists(atPath: url.path) else { continue }
+
+            guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+                  let modificationDate = attributes[FileAttributeKey.modificationDate] as? Date else {
+                return NSImage(contentsOf: url)
+            }
+
+            if Date().timeIntervalSince(modificationDate) > 7 * 24 * 60 * 60 {
+                try? fileManager.removeItem(at: url)
+                continue
+            }
+
+            guard let image = NSImage(contentsOf: url) else { continue }
+            touchFiles(for: identity)
+            return image
+        }
+
+        return nil
+    }
+
+    func store(_ image: NSImage, for identity: PreviewIdentity) {
+        guard let data = jpegData(for: image) else { return }
+        for key in identity.cacheKeys {
+            try? data.write(to: fileURL(forKey: key), options: .atomic)
+        }
+    }
+
+    func cleanup(maximumImageCount: Int, maximumAge: TimeInterval) {
+        guard let files = try? fileManager.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return
+        }
+
+        let now = Date()
+        let entries = files.compactMap { url -> (url: URL, date: Date)? in
+            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+            guard let date = values?.contentModificationDate else { return nil }
+            return (url, date)
+        }
+
+        for entry in entries where now.timeIntervalSince(entry.date) > maximumAge {
+            try? fileManager.removeItem(at: entry.url)
+        }
+
+        let remaining = entries
+            .filter { now.timeIntervalSince($0.date) <= maximumAge }
+            .sorted { $0.date > $1.date }
+
+        for entry in remaining.dropFirst(maximumImageCount) {
+            try? fileManager.removeItem(at: entry.url)
+        }
+    }
+
+    private func touchFiles(for identity: PreviewIdentity) {
+        let now = Date()
+        for key in identity.cacheKeys {
+            let url = fileURL(forKey: key)
+            guard fileManager.fileExists(atPath: url.path) else { continue }
+            try? fileManager.setAttributes([FileAttributeKey.modificationDate: now], ofItemAtPath: url.path)
+        }
+    }
+
+    private func fileURL(forKey key: String) -> URL {
+        let fileName = "\(PreviewIdentity.stableHashHex(key)).jpg"
+        return directoryURL.appendingPathComponent(fileName, isDirectory: false)
+    }
+
+    private func migrateLegacyCacheIfNeeded() {
+        guard legacyDirectoryURL != directoryURL,
+              fileManager.fileExists(atPath: legacyDirectoryURL.path),
+              let legacyFiles = try? fileManager.contentsOfDirectory(
+                at: legacyDirectoryURL,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+              ) else {
+            return
+        }
+
+        for legacyFile in legacyFiles where legacyFile.pathExtension.lowercased() == "jpg" {
+            let destination = directoryURL.appendingPathComponent(legacyFile.lastPathComponent, isDirectory: false)
+            guard !fileManager.fileExists(atPath: destination.path) else { continue }
+            try? fileManager.copyItem(at: legacyFile, to: destination)
+        }
+    }
+
+    private func jpegData(for image: NSImage) -> Data? {
+        guard let tiffData = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else {
+            return nil
+        }
+
+        return bitmap.representation(
+            using: .jpeg,
+            properties: [.compressionFactor: 0.82]
+        )
+    }
+}
+
+private actor CaptureLimiter {
+    private var availablePermits: Int
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) {
+        availablePermits = max(1, limit)
+    }
+
+    func acquire() async {
+        if availablePermits > 0 {
+            availablePermits -= 1
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        if waiters.isEmpty {
+            availablePermits += 1
+        } else {
+            waiters.removeFirst().resume()
+        }
     }
 }
 

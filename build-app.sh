@@ -1,16 +1,17 @@
 #!/bin/bash
 
-# BetterTabbing Build & Package Script
+# WindowLens Build & Package Script
 # Usage: ./build-app.sh
 
 set -e  # Exit on any error
 
 # Configuration
-APP_NAME="BetterTabbing"
-BUNDLE_ID="com.fornaxchemica.bettertabbing"
+APP_NAME="WindowLens"
+BINARY_NAME="WindowLens"
+BUNDLE_ID="com.chakshujain.windowlens"
 VERSION="1.0.0"
 BUILD_NUMBER="1"
-MIN_MACOS="13.0"
+MIN_MACOS="26.0"
 SIGNING_IDENTITY="Developer ID Application: SpareChange Incorporated (NYC) (TD6ZPWX7QD)"
 
 # Colors for output
@@ -49,7 +50,7 @@ mkdir -p "${APP_NAME}.app/Contents/Resources"
 
 # Copy binary
 echo -e "\n${YELLOW}[4/6] Copying binary...${NC}"
-cp ".build/release/${APP_NAME}" "${APP_NAME}.app/Contents/MacOS/"
+cp ".build/release/${BINARY_NAME}" "${APP_NAME}.app/Contents/MacOS/"
 
 # Create Info.plist
 echo -e "\n${YELLOW}[5/6] Creating Info.plist...${NC}"
@@ -61,11 +62,13 @@ cat > "${APP_NAME}.app/Contents/Info.plist" << EOF
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleExecutable</key>
-    <string>${APP_NAME}</string>
+    <string>${BINARY_NAME}</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>${BUNDLE_ID}</string>
+    <key>CFBundleDisplayName</key>
+    <string>${APP_NAME}</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -83,7 +86,7 @@ cat > "${APP_NAME}.app/Contents/Info.plist" << EOF
     <key>LSUIElement</key>
     <true/>
     <key>NSHumanReadableCopyright</key>
-    <string>Copyright © 2024 SpareChange Incorporated. All rights reserved.</string>
+    <string>Copyright © 2026 Sid Premkumar, Chakshu Jain, and contributors.</string>
 </dict>
 </plist>
 EOF
