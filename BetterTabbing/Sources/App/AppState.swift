@@ -37,6 +37,7 @@ final class AppState: ObservableObject {
     @Published var hasMouseMoved = false  // Whether mouse has actually moved since panel appeared
     @Published private(set) var hasNativeSelection = false
     @Published private(set) var nativeSelectedItemFrame: CGRect?
+    @Published private(set) var nativeSwitcherFrame: CGRect?
     private(set) var nativeSelectionGeneration: UInt64 = 0
     var lastMousePosition: CGPoint? = nil  // Track last mouse position to detect actual movement
     private var nativeTraversalSnapshot: [ApplicationModel]?
@@ -199,11 +200,28 @@ final class AppState: ObservableObject {
         isNativeTraversalSnapshotActive ? nativeSelectionGeneration : nil
     }
 
+    var hasNativePlacementAnchor: Bool {
+        guard let nativeSelectedItemFrame,
+              let nativeSwitcherFrame else {
+            return false
+        }
+
+        return nativeSelectedItemFrame.width > 1
+            && nativeSelectedItemFrame.height > 1
+            && nativeSwitcherFrame.width > 1
+            && nativeSwitcherFrame.height > 1
+    }
+
     func previewRequestGeneration(for mode: SwitcherPresentationMode) -> UInt64? {
         mode == .nativePreview ? currentNativePreviewGeneration : nil
     }
 
     func setWindowPreview(_ update: WindowPreviewUpdate) {
+        guard isVisible else {
+            print("[AppState][preview] dropped preview while switcher hidden for windowID=\(update.windowID) pid=\(update.ownerPID.map(String.init) ?? "unknown")")
+            return
+        }
+
         var updatedApplications = applications
         var didUpdate = false
         var didFindWindow = false
@@ -281,6 +299,7 @@ final class AppState: ObservableObject {
         isKeyboardNavigating = false
         lastMousePosition = nil
         nativeSelectedItemFrame = nil
+        nativeSwitcherFrame = nil
         if mode == .nativePreview {
             hasNativeSelection = false
         }
@@ -383,6 +402,7 @@ final class AppState: ObservableObject {
         advanceNativeSelectionGeneration(clearAnchor: true)
         nativeTraversalSnapshot = nil
         nativeSelectedItemFrame = nil
+        nativeSwitcherFrame = nil
     }
 
     @discardableResult
@@ -391,6 +411,7 @@ final class AppState: ObservableObject {
         bundleIdentifier: String?,
         title: String?,
         anchorFrame: CGRect?,
+        switcherFrame: CGRect?,
         resolvedApplication: ApplicationModel? = nil
     ) -> Bool {
         advanceNativeSelectionGeneration(clearAnchor: false)
@@ -405,8 +426,14 @@ final class AppState: ObservableObject {
 
         if let anchorFrame, anchorFrame.width > 1, anchorFrame.height > 1 {
             nativeSelectedItemFrame = normalizedNativeAnchorFrame(anchorFrame)
-        } else if nativeSelectedItemFrame == nil {
+        } else {
             nativeSelectedItemFrame = nil
+        }
+
+        if let switcherFrame, switcherFrame.width > 1, switcherFrame.height > 1 {
+            nativeSwitcherFrame = normalizedNativeAnchorFrame(switcherFrame)
+        } else {
+            nativeSwitcherFrame = nil
         }
 
         let previousSelectedAppPID = selectedApp?.pid
@@ -432,15 +459,48 @@ final class AppState: ObservableObject {
         nativeSelectionGeneration &+= 1
         if clearAnchor {
             nativeSelectedItemFrame = nil
+            nativeSwitcherFrame = nil
         }
     }
 
     private func upsertNativeApplication(_ app: ApplicationModel) {
         if let index = applications.firstIndex(where: { $0.pid == app.pid || $0.bundleIdentifier == app.bundleIdentifier }) {
-            applications[index] = app
+            var mergedApplication = app
+            for windowIndex in mergedApplication.windows.indices {
+                guard mergedApplication.windows[windowIndex].previewImage == nil else { continue }
+
+                let identity = mergedApplication.windows[windowIndex].previewIdentity
+                if let existingWindow = applications[index].windows.first(where: { $0.previewIdentity.matches(identity) }),
+                   let previewImage = existingWindow.previewImage {
+                    mergedApplication.windows[windowIndex].previewImage = previewImage
+                }
+            }
+            applications[index] = mergedApplication
         } else {
             applications.append(app)
         }
+        nativeTraversalSnapshot = applications
+    }
+
+    func hydrateCachedPreviews(for pid: pid_t) {
+        guard let appIndex = applications.firstIndex(where: { $0.pid == pid }) else { return }
+
+        var app = applications[appIndex]
+        var didUpdate = false
+
+        for windowIndex in app.windows.indices {
+            guard app.windows[windowIndex].previewImage == nil else { continue }
+            guard !app.windows[windowIndex].isWindowlessPlaceholder else { continue }
+
+            if let image = WindowPreviewService.shared.cachedPreview(for: app.windows[windowIndex].previewIdentity) {
+                app.windows[windowIndex].previewImage = image
+                didUpdate = true
+            }
+        }
+
+        guard didUpdate else { return }
+
+        applications[appIndex] = app
         nativeTraversalSnapshot = applications
     }
 
@@ -968,6 +1028,20 @@ final class AppState: ObservableObject {
         quitHoldStartTime = nil
     }
 
+    func clearPreviewImages(reason: String) {
+        guard !isVisible else {
+            print("[AppState] Skipped preview image clearing while switcher is visible: \(reason)")
+            return
+        }
+
+        applications = applications.strippingPreviewImages()
+        nativeTraversalSnapshot = nativeTraversalSnapshot?.strippingPreviewImages()
+        workspaceSessionSnapshot = workspaceSessionSnapshot?.strippingPreviewImages()
+        latestLiveMRUApplications = latestLiveMRUApplications.strippingPreviewImages()
+
+        print("[AppState] Preview image references cleared: \(reason)")
+    }
+
     func reset() {
         cancelEHold(triggeredAI: false)
         cancelQuitHold()
@@ -993,4 +1067,18 @@ final class AppState: ObservableObject {
     }
 
     private init() {}
+}
+
+private extension Array where Element == ApplicationModel {
+    func strippingPreviewImages() -> [ApplicationModel] {
+        var strippedApplications = self
+
+        for appIndex in strippedApplications.indices {
+            for windowIndex in strippedApplications[appIndex].windows.indices {
+                strippedApplications[appIndex].windows[windowIndex].previewImage = nil
+            }
+        }
+
+        return strippedApplications
+    }
 }

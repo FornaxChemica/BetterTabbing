@@ -11,6 +11,7 @@ final class SwitcherPanelManager {
 
     /// Cancellables for Combine subscriptions
     private var cancellables = Set<AnyCancellable>()
+    private var idlePreviewTrimWorkItem: DispatchWorkItem?
 
     private init() {
         setupScreenObserver()
@@ -150,6 +151,10 @@ final class SwitcherPanelManager {
 
     func showNativeFallbackPreviewPanel() {
         guard AppState.shared.hasNativeSelection else { return }
+        guard AppState.shared.hasNativePlacementAnchor else {
+            hideVisibleNativePreviewPanels()
+            return
+        }
         showNativePanelOnTargetScreen()
     }
 
@@ -174,6 +179,10 @@ final class SwitcherPanelManager {
     }
 
     private func showNativePanelOnTargetScreen() {
+        guard AppState.shared.hasNativePlacementAnchor else {
+            hideVisibleNativePreviewPanels()
+            return
+        }
         guard let targetScreen = nativePreviewScreen() else { return }
         guard let targetPanel = ensurePanelExists(for: targetScreen) else { return }
 
@@ -187,6 +196,14 @@ final class SwitcherPanelManager {
             targetPanel.recenterOnAssociatedScreen()
         } else {
             targetPanel.showOnScreen(mode: .nativePreview, skipStateUpdate: true)
+        }
+    }
+
+    private func hideVisibleNativePreviewPanels() {
+        guard AppState.shared.presentationMode == .nativePreview else { return }
+
+        for panel in panels.values where panel.isVisible {
+            panel.hidePanel()
         }
     }
 
@@ -211,7 +228,29 @@ final class SwitcherPanelManager {
             panel.hidePanel()
         }
         AppState.shared.reset()
+        scheduleIdlePreviewMemoryTrim(reason: "switcher hidden")
         print("[SwitcherPanelManager] Hidden all \(panels.count) panels")
+    }
+
+    func scheduleIdlePreviewMemoryTrim(reason: String) {
+        idlePreviewTrimWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem {
+            Task { @MainActor in
+                guard !AppState.shared.isVisible else {
+                    print("[SwitcherPanelManager] Idle preview trim skipped because switcher reopened: \(reason)")
+                    return
+                }
+
+                AppState.shared.clearPreviewImages(reason: "idle after \(reason)")
+                WindowCache.shared.clearPreviewImages(reason: "idle after \(reason)")
+                WindowPreviewService.shared.trimVolatileMemory(reason: "idle after \(reason)")
+                print("[SwitcherPanelManager] Idle preview memory trim completed after \(reason)")
+            }
+        }
+
+        idlePreviewTrimWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: workItem)
     }
 
     func reconcileSystemActivation(
@@ -270,6 +309,7 @@ final class SwitcherPanelManager {
             bundleIdentifier: resolvedApplication.bundleIdentifier,
             title: resolvedApplication.name,
             anchorFrame: selection.frame,
+            switcherFrame: selection.switcherFrame,
             resolvedApplication: resolvedApplication
         )
 

@@ -11,6 +11,9 @@ final class SwitcherPanel: NSPanel {
     private let entranceDuration: TimeInterval = 0.12
     private let dismissalDuration: TimeInterval = 0.08
     private var presentationMode: SwitcherPresentationMode = .workspace
+    private let nativePlacementMargin: CGFloat = 24
+    private let nativeAnchorGap: CGFloat = 28
+    private let minimumNativePreviewHeight: CGFloat = 280
 
     /// The Y position of the top of the app grid (used to anchor expansions)
     private var gridTopY: CGFloat = 0
@@ -140,7 +143,7 @@ final class SwitcherPanel: NSPanel {
             let windowCount = appState.selectedApp?.windows.count ?? 1
             return CGSize(
                 width: nativePreviewWidth(for: windowCount, on: associatedScreen ?? NSScreen.main),
-                height: 362
+                height: 424
             )
         }
 
@@ -149,7 +152,7 @@ final class SwitcherPanel: NSPanel {
             let windowCount = appState.selectedApp?.windows.count ?? 1
             return CGSize(
                 width: nativePreviewWidth(for: windowCount, on: associatedScreen ?? NSScreen.main),
-                height: 362
+                height: 448
             )
         }
 
@@ -232,8 +235,41 @@ final class SwitcherPanel: NSPanel {
         case .nativePreview:
             return min(screen.visibleFrame.width * 0.92, 1320)
         case .workspace:
+            if AppState.shared.workspaceMode == .currentAppWindows {
+                return min(screen.visibleFrame.width * 0.92, 1320)
+            }
             return min(screen.frame.width * 0.88, 1040)
         }
+    }
+
+    private func constrainedPanelSize(
+        fittingSize: CGSize,
+        on screen: NSScreen,
+        mode: SwitcherPresentationMode
+    ) -> CGSize? {
+        let maxWidth = maximumPanelWidth(on: screen, mode: mode)
+        let maxHeight: CGFloat = min(screen.frame.height * 0.85, 800)
+        var panelSize = CGSize(
+            width: min(fittingSize.width, maxWidth),
+            height: min(fittingSize.height, maxHeight)
+        )
+
+        guard mode == .nativePreview else { return panelSize }
+        guard let switcherFrame = nativePlacementFrame(AppState.shared.nativeSwitcherFrame, on: screen) else {
+            return nil
+        }
+
+        let availableBelow = switcherFrame.minY
+            - screen.visibleFrame.minY
+            - nativePlacementMargin
+            - nativeAnchorGap
+
+        guard availableBelow >= minimumNativePreviewHeight else {
+            return nil
+        }
+
+        panelSize.height = min(panelSize.height, availableBelow)
+        return panelSize
     }
 
     private func recenterIfVisible() {
@@ -243,21 +279,30 @@ final class SwitcherPanel: NSPanel {
         let fittingSize = presentationMode == .nativePreview ? calculateCurrentSize() : (hostingView?.fittingSize ?? calculateCurrentSize())
 
         // Apply screen bounds
-        let maxWidth = maximumPanelWidth(on: screen, mode: presentationMode)
-        let maxHeight: CGFloat = min(screen.frame.height * 0.85, 800)
-        let panelSize = CGSize(
-            width: min(fittingSize.width, maxWidth),
-            height: min(fittingSize.height, maxHeight)
-        )
+        guard let panelSize = constrainedPanelSize(
+            fittingSize: fittingSize,
+            on: screen,
+            mode: presentationMode
+        ) else {
+            hideNativePreviewForInvalidPlacementIfNeeded(mode: presentationMode)
+            return
+        }
 
         // Keep workspace growth anchored to the grid. Native Cmd+Tab previews follow
         // the currently selected Dock switcher item when AX exposes its frame.
-        let origin = presentationMode == .nativePreview
-            ? originForPanel(size: panelSize, on: screen, mode: presentationMode)
-            : CGPoint(
+        let origin: CGPoint
+        if presentationMode == .nativePreview {
+            guard let nativeOrigin = originForPanel(size: panelSize, on: screen, mode: presentationMode) else {
+                hideNativePreviewForInvalidPlacementIfNeeded(mode: presentationMode)
+                return
+            }
+            origin = nativeOrigin
+        } else {
+            origin = CGPoint(
                 x: screen.frame.midX - panelSize.width / 2,
                 y: gridTopY - panelSize.height
             )
+        }
 
         let newFrame = CGRect(origin: origin, size: panelSize)
         let expectedNativeGeneration = presentationMode == .nativePreview ? AppState.shared.nativeSelectionGeneration : nil
@@ -290,22 +335,31 @@ final class SwitcherPanel: NSPanel {
         let fittingSize = presentationMode == .nativePreview ? calculateCurrentSize() : (hostingView?.fittingSize ?? calculateCurrentSize())
 
         // Apply screen bounds
-        let maxWidth = maximumPanelWidth(on: screen, mode: presentationMode)
-        let maxHeight: CGFloat = min(screen.frame.height * 0.85, 800)
-        let panelSize = CGSize(
-            width: min(fittingSize.width, maxWidth),
-            height: min(fittingSize.height, maxHeight)
-        )
+        guard let panelSize = constrainedPanelSize(
+            fittingSize: fittingSize,
+            on: screen,
+            mode: presentationMode
+        ) else {
+            hideNativePreviewForInvalidPlacementIfNeeded(mode: presentationMode)
+            return
+        }
 
         // Keep workspace top anchored. Native Cmd+Tab previews follow the selected
         // native switcher item if the Dock exposes one.
         let currentTop = frame.origin.y + frame.size.height
-        let origin = presentationMode == .nativePreview
-            ? originForPanel(size: panelSize, on: screen, mode: presentationMode)
-            : CGPoint(
+        let origin: CGPoint
+        if presentationMode == .nativePreview {
+            guard let nativeOrigin = originForPanel(size: panelSize, on: screen, mode: presentationMode) else {
+                hideNativePreviewForInvalidPlacementIfNeeded(mode: presentationMode)
+                return
+            }
+            origin = nativeOrigin
+        } else {
+            origin = CGPoint(
                 x: screen.frame.midX - panelSize.width / 2,
                 y: currentTop - panelSize.height
             )
+        }
 
         // Set frame instantly (no animation) - SwiftUI will animate the content
         setFrame(CGRect(origin: origin, size: panelSize), display: true)
@@ -319,10 +373,9 @@ final class SwitcherPanel: NSPanel {
         mode == .nativePreview ? 170 : 40
     }
 
-    private func originForPanel(size panelSize: CGSize, on screen: NSScreen, mode: SwitcherPresentationMode) -> CGPoint {
-        if mode == .nativePreview,
-           let anchorFrame = nativeSelectionAnchorFrame(on: screen) {
-            return anchoredNativeOrigin(panelSize: panelSize, anchorFrame: anchorFrame, screen: screen)
+    private func originForPanel(size panelSize: CGSize, on screen: NSScreen, mode: SwitcherPresentationMode) -> CGPoint? {
+        if mode == .nativePreview {
+            return nativeOriginForPanel(size: panelSize, on: screen)
         }
 
         return CGPoint(
@@ -331,8 +384,24 @@ final class SwitcherPanel: NSPanel {
         )
     }
 
-    private func nativeSelectionAnchorFrame(on screen: NSScreen) -> CGRect? {
-        guard let frame = AppState.shared.nativeSelectedItemFrame,
+    private func nativeOriginForPanel(size panelSize: CGSize, on screen: NSScreen) -> CGPoint? {
+        let appState = AppState.shared
+        guard appState.hasNativePlacementAnchor,
+              let selectedItemFrame = nativePlacementFrame(appState.nativeSelectedItemFrame, on: screen),
+              let switcherFrame = nativePlacementFrame(appState.nativeSwitcherFrame, on: screen) else {
+            return nil
+        }
+
+        return anchoredNativeOrigin(
+            panelSize: panelSize,
+            selectedItemFrame: selectedItemFrame,
+            switcherFrame: switcherFrame,
+            screen: screen
+        )
+    }
+
+    private func nativePlacementFrame(_ frame: CGRect?, on screen: NSScreen) -> CGRect? {
+        guard let frame,
               frame.width > 1,
               frame.height > 1 else {
             return nil
@@ -342,51 +411,38 @@ final class SwitcherPanel: NSPanel {
             return frame
         }
 
-        // Accessibility screen frames are normally AppKit screen coordinates. Keep
-        // a flipped fallback so anchoring survives AX providers that report top-left
-        // display coordinates.
-        let flippedFrame = CGRect(
-            x: frame.origin.x,
-            y: screen.frame.maxY - (frame.origin.y - screen.frame.minY) - frame.height,
-            width: frame.width,
-            height: frame.height
-        )
-
-        if screen.frame.intersects(flippedFrame) || screen.frame.contains(CGPoint(x: flippedFrame.midX, y: flippedFrame.midY)) {
-            return flippedFrame
-        }
-
         return nil
     }
 
-    private func anchoredNativeOrigin(panelSize: CGSize, anchorFrame: CGRect, screen: NSScreen) -> CGPoint {
+    private func anchoredNativeOrigin(
+        panelSize: CGSize,
+        selectedItemFrame: CGRect,
+        switcherFrame: CGRect,
+        screen: NSScreen
+    ) -> CGPoint {
         let visibleFrame = screen.visibleFrame
-        let margin: CGFloat = 24
-        let anchorGap: CGFloat = 28
-        let minX = visibleFrame.minX + margin
-        let maxX = visibleFrame.maxX - panelSize.width - margin
-        let x = clamped(anchorFrame.midX - panelSize.width / 2, min: minX, max: maxX)
+        let minX = visibleFrame.minX + nativePlacementMargin
+        let maxX = visibleFrame.maxX - panelSize.width - nativePlacementMargin
+        let x = clamped(selectedItemFrame.midX - panelSize.width / 2, min: minX, max: maxX)
 
-        let aboveY = anchorFrame.maxY + anchorGap
-        let belowY = anchorFrame.minY - panelSize.height - anchorGap
-        let minY = visibleFrame.minY + margin
-        let maxY = visibleFrame.maxY - panelSize.height - margin
+        let belowY = switcherFrame.minY - panelSize.height - nativeAnchorGap
+        let minY = visibleFrame.minY + nativePlacementMargin
+        let maxY = visibleFrame.maxY - panelSize.height - nativePlacementMargin
 
-        if aboveY <= maxY {
-            return CGPoint(x: x, y: clamped(aboveY, min: minY, max: maxY))
-        }
-
-        if belowY >= minY {
-            return CGPoint(x: x, y: clamped(belowY, min: minY, max: maxY))
-        }
-
-        let centeredY = screen.frame.midY - panelSize.height / 2 + verticalOffset(for: .nativePreview)
-        return CGPoint(x: x, y: clamped(centeredY, min: minY, max: maxY))
+        return CGPoint(x: x, y: clamped(belowY, min: minY, max: maxY))
     }
 
     private func clamped(_ value: CGFloat, min lowerBound: CGFloat, max upperBound: CGFloat) -> CGFloat {
         guard lowerBound <= upperBound else { return lowerBound }
         return Swift.min(Swift.max(value, lowerBound), upperBound)
+    }
+
+    private func hideNativePreviewForInvalidPlacementIfNeeded(mode: SwitcherPresentationMode) {
+        guard mode == .nativePreview, isVisible else { return }
+
+        stopClickOutsideMonitor()
+        alphaValue = 0
+        orderOut(nil)
     }
 
     private func canCommitLayout(expectedNativeGeneration: UInt64?) -> Bool {
@@ -422,14 +478,19 @@ final class SwitcherPanel: NSPanel {
         let fittingSize = hostingView?.fittingSize ?? calculateCurrentSize()
 
         // Apply screen bounds
-        let maxWidth = maximumPanelWidth(on: screen, mode: mode)
-        let maxHeight: CGFloat = min(screen.frame.height * 0.85, 800)
-        let panelSize = CGSize(
-            width: min(fittingSize.width, maxWidth),
-            height: min(fittingSize.height, maxHeight)
-        )
+        guard let panelSize = constrainedPanelSize(
+            fittingSize: fittingSize,
+            on: screen,
+            mode: mode
+        ) else {
+            hideNativePreviewForInvalidPlacementIfNeeded(mode: mode)
+            return
+        }
 
-        let origin = originForPanel(size: panelSize, on: screen, mode: mode)
+        guard let origin = originForPanel(size: panelSize, on: screen, mode: mode) else {
+            hideNativePreviewForInvalidPlacementIfNeeded(mode: mode)
+            return
+        }
         setFrame(CGRect(origin: origin, size: panelSize), display: true)
 
         // Store the top of the grid as anchor point (top of panel since no search bar initially)
@@ -461,14 +522,19 @@ final class SwitcherPanel: NSPanel {
         let fittingSize = hostingView?.fittingSize ?? calculateCurrentSize()
 
         // Apply screen bounds
-        let maxWidth = maximumPanelWidth(on: screen, mode: mode)
-        let maxHeight: CGFloat = min(screen.frame.height * 0.85, 800)
-        let panelSize = CGSize(
-            width: min(fittingSize.width, maxWidth),
-            height: min(fittingSize.height, maxHeight)
-        )
+        guard let panelSize = constrainedPanelSize(
+            fittingSize: fittingSize,
+            on: screen,
+            mode: mode
+        ) else {
+            hideNativePreviewForInvalidPlacementIfNeeded(mode: mode)
+            return
+        }
 
-        let origin = originForPanel(size: panelSize, on: screen, mode: mode)
+        guard let origin = originForPanel(size: panelSize, on: screen, mode: mode) else {
+            hideNativePreviewForInvalidPlacementIfNeeded(mode: mode)
+            return
+        }
         setFrame(CGRect(origin: origin, size: panelSize), display: true)
 
         // Store the top of the grid as anchor point (top of panel since no search bar initially)
@@ -501,14 +567,19 @@ final class SwitcherPanel: NSPanel {
         let fittingSize = hostingView?.fittingSize ?? calculateCurrentSize()
 
         // Apply screen bounds
-        let maxWidth = maximumPanelWidth(on: screen, mode: mode)
-        let maxHeight: CGFloat = min(screen.frame.height * 0.85, 800)
-        let panelSize = CGSize(
-            width: min(fittingSize.width, maxWidth),
-            height: min(fittingSize.height, maxHeight)
-        )
+        guard let panelSize = constrainedPanelSize(
+            fittingSize: fittingSize,
+            on: screen,
+            mode: mode
+        ) else {
+            hideNativePreviewForInvalidPlacementIfNeeded(mode: mode)
+            return
+        }
 
-        let origin = originForPanel(size: panelSize, on: screen, mode: mode)
+        guard let origin = originForPanel(size: panelSize, on: screen, mode: mode) else {
+            hideNativePreviewForInvalidPlacementIfNeeded(mode: mode)
+            return
+        }
         setFrame(CGRect(origin: origin, size: panelSize), display: true)
 
         // Store the top of the grid as anchor point
@@ -537,6 +608,7 @@ final class SwitcherPanel: NSPanel {
 
         dismissWithExitAnimation()
         AppState.shared.reset()
+        SwitcherPanelManager.shared.scheduleIdlePreviewMemoryTrim(reason: "single panel hidden")
 
         print("[SwitcherPanel] Hidden")
     }

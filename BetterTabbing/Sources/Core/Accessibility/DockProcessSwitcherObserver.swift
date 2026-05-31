@@ -7,6 +7,7 @@ struct DockProcessSwitcherSelection {
     let title: String?
     let bundleURL: URL?
     let frame: CGRect?
+    let switcherFrame: CGRect?
 }
 
 final class DockProcessSwitcherObserver: NSObject {
@@ -196,7 +197,10 @@ final class DockProcessSwitcherObserver: NSObject {
 
     private func emitCurrentSelection(from switcherList: AXUIElement) {
         guard let selectedChild = selectedChild(in: switcherList) else { return }
-        let selection = selection(from: selectedChild)
+        let selection = selection(
+            from: selectedChild,
+            switcherFrame: frame(for: switcherList)
+        )
 
         hasDeliveredSelection = true
         selectionVersion &+= 1
@@ -211,7 +215,7 @@ final class DockProcessSwitcherObserver: NSObject {
         return selectedChildren.first
     }
 
-    private func selection(from element: AXUIElement) -> DockProcessSwitcherSelection {
+    private func selection(from element: AXUIElement, switcherFrame: CGRect?) -> DockProcessSwitcherSelection {
         let title = directTitle(for: element) ?? bestTitle(for: element, remainingDepth: 2)
         let bundleURL = urlAttribute(kAXURLAttribute, from: element) ?? bestURL(for: element, remainingDepth: 2)
         let bundleIdentifier = bundleURL.flatMap { Bundle(url: $0)?.bundleIdentifier }
@@ -226,7 +230,8 @@ final class DockProcessSwitcherObserver: NSObject {
             bundleIdentifier: bundleIdentifier,
             title: title,
             bundleURL: bundleURL,
-            frame: frame(for: element)
+            frame: frame(for: element),
+            switcherFrame: switcherFrame
         )
     }
 

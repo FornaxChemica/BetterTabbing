@@ -54,8 +54,6 @@ struct SwitcherView: View {
                     onWindowHovered: { _ in },
                     onWindowClicked: { _ in }
                 )
-
-                NativeContextStrip(app: selectedApp)
             }
         }
         .padding(.vertical, 10)
@@ -329,42 +327,6 @@ struct SwitcherView: View {
 
     private func confirmSelection() {
         NotificationCenter.default.post(name: .confirmSwitcherSelection, object: nil)
-    }
-}
-
-private struct NativeContextStrip: View {
-    let app: ApplicationModel
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(nsImage: app.icon)
-                .resizable()
-                .interpolation(.high)
-                .frame(width: 22, height: 22)
-                .cornerRadius(5)
-
-            Text(app.name)
-                .font(.system(size: 13, weight: .medium))
-                .lineLimit(1)
-
-            if app.windowCount > 1 {
-                Text("\(app.windowCount) windows")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
-        .background(
-            GlassBackground(
-                cornerRadius: 14,
-                tintOpacity: 0.035,
-                strokeOpacity: 0.055,
-                shadowOpacity: 0.06,
-                shadowRadius: 10,
-                shadowYOffset: 5
-            )
-        )
     }
 }
 

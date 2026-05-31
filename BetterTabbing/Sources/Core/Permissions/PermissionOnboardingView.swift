@@ -7,20 +7,32 @@ struct PermissionOnboardingView: View {
     let onComplete: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            header
+        NativeLiquidGlassSurface(
+            cornerRadius: 24,
+            nativeStyle: .regular,
+            material: .hudWindow,
+            tintOpacity: 0.026,
+            strokeOpacity: 0.11,
+            strokeWidth: 0.7,
+            shadowOpacity: 0.18,
+            shadowRadius: 24,
+            shadowYOffset: 14
+        ) {
+            VStack(alignment: .leading, spacing: 20) {
+                header
 
-            VStack(spacing: 10) {
-                ForEach(viewModel.items) { item in
-                    PermissionRowView(item: item) {
-                        viewModel.grant(item.permission)
+                VStack(spacing: 10) {
+                    ForEach(viewModel.items) { item in
+                        PermissionRowView(item: item) {
+                            viewModel.grant(item.permission)
+                        }
+                        .transition(.opacity.combined(with: .scale(scale: 0.98)))
                     }
-                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
                 }
             }
+            .padding(24)
+            .frame(width: 420)
         }
-        .padding(24)
-        .frame(width: 420)
         .animation(.spring(response: 0.28, dampingFraction: 0.82), value: viewModel.items)
         .task {
             await viewModel.refreshNow()
@@ -68,36 +80,39 @@ private struct PermissionRowView: View {
     let grant: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: item.systemImage)
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(iconColor)
-                .frame(width: 28, height: 28)
+        NativeLiquidGlassSurface(
+            cornerRadius: 14,
+            nativeStyle: .clear,
+            material: .popover,
+            tintOpacity: 0.018,
+            strokeOpacity: 0.075,
+            shadowOpacity: 0.035,
+            shadowRadius: 8,
+            shadowYOffset: 4
+        ) {
+            HStack(spacing: 12) {
+                Image(systemName: item.systemImage)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(iconColor)
+                    .frame(width: 28, height: 28)
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(item.title)
-                    .font(.headline)
-                    .foregroundStyle(.primary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.title)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
 
-                Text(item.description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    Text(item.description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 10)
+
+                trailingControl
             }
-
-            Spacer(minLength: 10)
-
-            trailingControl
+            .padding(12)
         }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.primary.opacity(0.045))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.6)
-        )
     }
 
     @ViewBuilder
@@ -126,5 +141,52 @@ private struct PermissionRowView: View {
 
     private var iconColor: Color {
         item.state == .granted ? .green : .secondary
+    }
+}
+
+struct PermissionReadyView: View {
+    let onDismiss: () -> Void
+
+    var body: some View {
+        NativeLiquidGlassSurface(
+            cornerRadius: 24,
+            nativeStyle: .regular,
+            material: .hudWindow,
+            tintOpacity: 0.024,
+            strokeOpacity: 0.10,
+            strokeWidth: 0.7,
+            shadowOpacity: 0.18,
+            shadowRadius: 22,
+            shadowYOffset: 12
+        ) {
+            VStack(spacing: 16) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 42, weight: .semibold))
+                    .foregroundStyle(.green)
+                    .symbolEffect(.bounce)
+
+                VStack(spacing: 5) {
+                    Text("WindowLens is ready")
+                        .font(.title3.weight(.semibold))
+
+                    Text("All permissions are granted. Option-Tab is active.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+
+                Button("Done", action: onDismiss)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+            }
+            .padding(24)
+            .frame(width: 360)
+        }
+        .task {
+            try? await Task.sleep(nanoseconds: 2_200_000_000)
+            await MainActor.run {
+                onDismiss()
+            }
+        }
     }
 }

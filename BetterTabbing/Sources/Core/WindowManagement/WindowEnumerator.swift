@@ -9,6 +9,7 @@ final class WindowEnumerator {
     struct EnumerationOptions {
         var includeMinimized: Bool = true
         var includeAllSpaces: Bool = true
+        var hydratePreviewImages: Bool = false
         var minimumWidth: CGFloat = 50
         var minimumHeight: CGFloat = 50
 
@@ -207,19 +208,20 @@ final class WindowEnumerator {
                 name: name,
                 icon: icon,
                 windows: windows.map { info in
-                    WindowModel(
+                    let previewIdentity = PreviewIdentity(
+                        ownerPID: info.ownerPID,
+                        bundleIdentifier: info.ownerBundleIdentifier,
+                        cgWindowID: info.windowID,
+                        axIndex: info.axIndex,
+                        title: info.windowName ?? info.ownerName,
+                        bounds: info.bounds,
+                        hasReliableCGWindowID: info.hasReliableWindowID
+                    )
+                    return WindowModel(
                         from: info,
-                        previewImage: WindowPreviewService.shared.cachedPreview(
-                            for: PreviewIdentity(
-                                ownerPID: info.ownerPID,
-                                bundleIdentifier: info.ownerBundleIdentifier,
-                                cgWindowID: info.windowID,
-                                axIndex: info.axIndex,
-                                title: info.windowName ?? info.ownerName,
-                                bounds: info.bounds,
-                                hasReliableCGWindowID: info.hasReliableWindowID
-                            )
-                        )
+                        previewImage: options.hydratePreviewImages
+                            ? WindowPreviewService.shared.cachedPreview(for: previewIdentity)
+                            : nil
                     )
                 },
                 isActive: app.isActive

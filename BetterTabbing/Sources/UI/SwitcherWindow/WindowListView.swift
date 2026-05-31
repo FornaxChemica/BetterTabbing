@@ -50,7 +50,7 @@ struct WindowListView: View {
                             }
                         }
                         .frame(minWidth: geometry.size.width, alignment: app.hasMultipleWindows ? .leading : .center)
-                        .padding(.horizontal, app.hasMultipleWindows ? 18 : 0)
+                        .padding(.horizontal, app.hasMultipleWindows ? 22 : 0)
                         .padding(.vertical, 18)
                     }
                 }
@@ -70,7 +70,7 @@ struct WindowListView: View {
                 }
             }
         }
-        .frame(height: presentationMode == .nativePreview ? 306 : 326)
+        .frame(height: presentationMode == .nativePreview ? 348 : 372)
         .onAppear {
             requestMissingPreviews()
         }
@@ -162,8 +162,8 @@ struct WindowListView: View {
         let count = max(surfaceItems.count, 1)
         if count >= 2 && count <= 3 {
             let spacing = CGFloat(count - 1) * 18
-            let listPadding: CGFloat = app.hasMultipleWindows ? 36 : 0
-            let surfacePadding = CGFloat(count) * 16
+            let listPadding: CGFloat = app.hasMultipleWindows ? 44 : 0
+            let surfacePadding = CGFloat(count) * 28
             let available = containerWidth - spacing - listPadding - surfacePadding
             return min(410, max(150, floor(available / CGFloat(count))))
         }
@@ -265,11 +265,12 @@ private struct WindowPreviewSurfaceView: View {
             }
         }
         .frame(width: geometry.visualSize.width, height: geometry.visualSize.height, alignment: .bottomLeading)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 14)
         .offset(y: isSelected ? -6 : (isHovered ? -2 : 8))
+        .scaleEffect(isSelected ? 1.07 : (isHovered ? 1.015 : 1.0), anchor: .center)
         .opacity(cardOpacity)
-        .animation(.easeInOut(duration: 0.18), value: isSelected)
+        .animation(.spring(response: 0.24, dampingFraction: 0.84), value: isSelected)
         .animation(.easeOut(duration: 0.12), value: isHovered)
         .animation(.easeOut(duration: 0.16), value: window.previewImage != nil)
         .contentShape(RoundedRectangle(cornerRadius: geometry.cornerRadius, style: .continuous))
@@ -537,7 +538,12 @@ private struct WindowPreviewPlaceholder: View {
                     .font(.system(size: geometry.visualSize.width < 160 ? 9 : 10, weight: .medium))
                     .foregroundStyle(.primary.opacity(0.64))
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(
+                width: geometry.visualSize.width,
+                height: geometry.visualSize.height,
+                alignment: .center
+            )
+            .offset(x: 4)
         }
     }
 }

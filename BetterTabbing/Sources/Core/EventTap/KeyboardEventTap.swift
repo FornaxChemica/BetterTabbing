@@ -36,6 +36,8 @@ enum ShortcutEvent {
     case nativeSwitchWindowNext
     case nativeSwitchWindowPrevious
     case nativeSwitchEnded
+    case windowHistoryUndo
+    case windowHistoryRedo
 }
 
 private final class KeyboardEventTapHealthTarget: NSObject {
@@ -513,6 +515,8 @@ final class KeyboardEventTap {
             return "Slash"
         case kVK_ANSI_Grave:
             return "Grave"
+        case kVK_ANSI_Z:
+            return "Z"
         case kVK_Return:
             return "Return"
         case kVK_Escape:
@@ -664,6 +668,23 @@ final class KeyboardEventTap {
                 onShortcutTriggered.send(.nativeSwitchWindowNext)
             }
             return nil
+        }
+
+        // Window visit history undo/redo (global, only when switcher is inactive)
+        if !switcherVisible && !pendingActivation && !nativeCommandTabSessionActive && !isRepeat {
+            if flags.contains(.maskCommand),
+               flags.contains(.maskShift),
+               !flags.contains(.maskAlternate),
+               !flags.contains(.maskControl) {
+                if keyCode == UInt16(kVK_ANSI_Z) {
+                    onShortcutTriggered.send(.windowHistoryUndo)
+                    return nil
+                }
+                if keyCode == UInt16(kVK_ANSI_Grave) {
+                    onShortcutTriggered.send(.windowHistoryRedo)
+                    return nil
+                }
+            }
         }
 
         // Handle shortcuts while switcher is visible OR pending (check this FIRST)

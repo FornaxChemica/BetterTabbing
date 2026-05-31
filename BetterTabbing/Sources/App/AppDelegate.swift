@@ -15,9 +15,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var lastWorkspaceWindowIndexByPID: [pid_t: Int] = [:]
     private var hasStartedWindowCache = false
     private var onboardingWindow: NSWindow?
+    private var permissionReadyWindow: NSWindow?
     private var permissionMonitorTimer: Timer?
     private var hasCompletedPermissionGate = false
     private var isEventTapSuspendedForMissingInput = false
+    private var hasShownReadyWindowThisLaunch = false
     private var lastPermissionAllGranted: Bool?
     private var lastLoggedPermissionStatusDescription: String?
     private let dockProcessSwitcherObserver = DockProcessSwitcherObserver()
@@ -112,9 +114,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard status.allGranted else {
             hasCompletedPermissionGate = false
 
+            if didTransitionToMissing {
+                if AppState.shared.isVisible {
+                    panelManager.hide()
+                } else {
+                    panelManager.scheduleIdlePreviewMemoryTrim(reason: "permission loss")
+                }
+            }
+
             if !status.accessibility, hasStartedWindowCache {
                 WindowCache.shared.stopMonitoring()
                 hasStartedWindowCache = false
+                WindowVisitHistory.shared.stopMonitoring()
                 print("[WindowLens] WindowCache monitoring stopped: Accessibility permission is missing")
             }
 
@@ -133,6 +144,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 print("[WindowLens] Permission gate blocked context=\(context):\n\(status.description)")
             }
 
+            closePermissionReadyWindow()
             showPermissionOnboardingWindow(
                 activate: shouldActivatePermissionWindow(context: context) || didTransitionToMissing
             )
@@ -176,12 +188,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
 
-        let hostingController = NSHostingController(rootView: view)
-        let window = NSWindow(contentViewController: hostingController)
-        window.title = "Welcome to WindowLens"
-        window.styleMask = [.titled]
-        window.isReleasedWhenClosed = false
-        window.delegate = self
+        let window = makePermissionGlassWindow(
+            title: "Welcome to WindowLens",
+            styleMask: [.titled, .fullSizeContentView],
+            rootView: view
+        )
         window.center()
 
         onboardingWindow = window
@@ -199,6 +210,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         onboardingWindow = nil
     }
 
+    private func showPermissionReadyWindow() {
+        guard !hasShownReadyWindowThisLaunch else { return }
+        hasShownReadyWindowThisLaunch = true
+
+        if let window = permissionReadyWindow {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let view = PermissionReadyView { [weak self] in
+            self?.closePermissionReadyWindow()
+        }
+        let window = makePermissionGlassWindow(
+            title: "WindowLens is Ready",
+            styleMask: [.titled, .closable, .fullSizeContentView],
+            rootView: view
+        )
+        window.center()
+
+        permissionReadyWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        print("[WindowLens] Permission ready window shown")
+    }
+
+    private func closePermissionReadyWindow() {
+        permissionReadyWindow?.close()
+        permissionReadyWindow = nil
+    }
+
+    private func makePermissionGlassWindow<Content: View>(
+        title: String,
+        styleMask: NSWindow.StyleMask,
+        rootView: Content
+    ) -> NSWindow {
+        let hostingController = NSHostingController(rootView: rootView)
+        let window = NSWindow(contentViewController: hostingController)
+        window.title = title
+        window.styleMask = styleMask
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.hasShadow = true
+        window.isMovableByWindowBackground = true
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.contentView?.wantsLayer = true
+        window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+        return window
+    }
+
     private func proceedAfterPermissions(status: PermissionManager.Status, context: String) {
         guard status.allGranted else {
             hasCompletedPermissionGate = false
@@ -212,21 +276,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hasCompletedPermissionGate = true
 
         startWindowCacheIfAccessibilityTrusted(status: status, context: context)
+        WindowVisitHistory.shared.startMonitoring()
 
         if eventTap?.isInstalled == true {
             eventTap?.verifyOrRebuild(reason: "permissions confirmed \(context)")
         } else {
             eventTap?.scheduleInstall(reason: "permissions confirmed \(context)", delay: 0.5)
         }
+
+        if context == "launch" || context == "onboarding complete" {
+            showPermissionReadyWindow()
+        }
     }
 
     func windowWillClose(_ notification: Notification) {
-        guard let window = notification.object as? NSWindow,
-              window === onboardingWindow else {
+        guard let window = notification.object as? NSWindow else {
             return
         }
 
-        onboardingWindow = nil
+        if window === onboardingWindow {
+            onboardingWindow = nil
+        } else if window === permissionReadyWindow {
+            permissionReadyWindow = nil
+        }
     }
 
     private func startWindowCacheIfAccessibilityTrusted(
@@ -535,7 +607,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             selectNativeWindow(reverse: true)
         case .nativeSwitchEnded:
             endNativeCommandTabSession(applySelectedWindow: true)
+        case .windowHistoryUndo:
+            performWindowHistoryUndo()
+        case .windowHistoryRedo:
+            performWindowHistoryRedo()
         }
+    }
+
+    private func performWindowHistoryUndo() {
+        guard !AppState.shared.isVisible else { return }
+        let outcome = WindowVisitHistory.shared.undo()
+        WindowHistoryHUD.shared.present(outcome: outcome)
+    }
+
+    private func performWindowHistoryRedo() {
+        guard !AppState.shared.isVisible else { return }
+        let outcome = WindowVisitHistory.shared.redo()
+        WindowHistoryHUD.shared.present(outcome: outcome)
     }
 
     private func startWorkspaceWindowSession(showImmediately: Bool) {
@@ -839,10 +927,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func requestSelectedNativeAppPreviews(_ app: ApplicationModel) {
         guard !app.windows.isEmpty else { return }
+        AppState.shared.hydrateCachedPreviews(for: app.pid)
+
+        guard let hydratedApp = AppState.shared.applications.first(where: { $0.pid == app.pid }),
+              !hydratedApp.windows.isEmpty else {
+            return
+        }
+
         WindowPreviewService.shared.requestPreviews(
-            for: app.windows,
-            ownerPID: app.pid,
-            appName: app.name,
+            for: hydratedApp.windows,
+            ownerPID: hydratedApp.pid,
+            appName: hydratedApp.name,
             selectionGeneration: AppState.shared.currentNativePreviewGeneration
         )
     }

@@ -219,6 +219,18 @@ final class WindowCache: @unchecked Sendable {
         lock.unlock()
     }
 
+    func clearPreviewImages(reason: String) {
+        lock.lock()
+        for appIndex in cache.indices {
+            for windowIndex in cache[appIndex].windows.indices {
+                cache[appIndex].windows[windowIndex].previewImage = nil
+            }
+        }
+        lock.unlock()
+
+        print("[WindowCache] Preview image references cleared: \(reason)")
+    }
+
     /// Move an app to the front of the cache. This is much faster than re-enumerating all windows.
     func moveAppToFront(pid: pid_t, fromOurSwitch: Bool = false) {
         lock.lock()

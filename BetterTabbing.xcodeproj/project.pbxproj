@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		0930A02223CF1F9B042D557B /* WindowSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE4D926371366F489FFD85F1 /* WindowSwitcher.swift */; };
+		0A1B2C3D4E5F60718293A4B /* WindowVisitHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F708192A3B4C /* WindowVisitHistory.swift */; };
+		0B1C2D3E4F5061728394A5B /* WindowHistoryHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B3C4D5E6F708192A3B4C5D /* WindowHistoryHUD.swift */; };
 		0931EEC0C52390AE9E797073 /* WindowCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E43D000BA543AF7D69C78F5 /* WindowCache.swift */; };
 		0F1808F8FD199FE89121B7CC /* PermissionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E028C9EC24B0418472AA627 /* PermissionManager.swift */; };
 		15B3B8F46D582E01317A2FF7 /* WindowRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8EA6DF769431C0C5DDFC955 /* WindowRowView.swift */; };
@@ -50,6 +52,8 @@
 		1016019BF84431C6A6F38F3C /* SwitcherView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwitcherView.swift; sourceTree = "<group>"; };
 		1E028C9EC24B0418472AA627 /* PermissionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionManager.swift; sourceTree = "<group>"; };
 		1E43D000BA543AF7D69C78F5 /* WindowCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowCache.swift; sourceTree = "<group>"; };
+		1A2B3C4D5E6F708192A3B4C /* WindowVisitHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowVisitHistory.swift; sourceTree = "<group>"; };
+		2B3C4D5E6F708192A3B4C5D /* WindowHistoryHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowHistoryHUD.swift; sourceTree = "<group>"; };
 		319162BA4FDF5C82AA38CAEA /* UserPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserPreferences.swift; sourceTree = "<group>"; };
 		370A59B59D1C745CB0846EE8 /* build-app.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = "build-app.sh"; sourceTree = "<group>"; };
 		3F30A3155D9DB846F43F2B34 /* GlassBackground.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassBackground.swift; sourceTree = "<group>"; };
@@ -106,6 +110,7 @@
 			children = (
 				BAF871667971FE98A6B67BBA /* FuzzyMatcher.swift */,
 				FE4D926371366F489FFD85F1 /* WindowSwitcher.swift */,
+				1A2B3C4D5E6F708192A3B4C /* WindowVisitHistory.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -228,6 +233,7 @@
 				7A8BD25C09D59564BBE63E8D /* AppTileView.swift */,
 				B4E08258B64673399D814024 /* CircularProgressRing.swift */,
 				3F30A3155D9DB846F43F2B34 /* GlassBackground.swift */,
+				2B3C4D5E6F708192A3B4C5D /* WindowHistoryHUD.swift */,
 				08B313704DC040E4FAEFE403 /* ResourceMonitorView.swift */,
 				F8EA6DF769431C0C5DDFC955 /* WindowRowView.swift */,
 			);
@@ -376,6 +382,8 @@
 				223D0687DB4E0155E2EF225C /* WindowModel.swift in Sources */,
 				A78BBBEFFB3B8A0F64D87CF1 /* FuzzyMatcher.swift in Sources */,
 				0930A02223CF1F9B042D557B /* WindowSwitcher.swift in Sources */,
+				0A1B2C3D4E5F60718293A4B /* WindowVisitHistory.swift in Sources */,
+				0B1C2D3E4F5061728394A5B /* WindowHistoryHUD.swift in Sources */,
 				2D6470F3FB0E0265CE885B91 /* AppTileView.swift in Sources */,
 				D93681A52B15106EFD23A136 /* CircularProgressRing.swift in Sources */,
 				AECA69A969D0BF2D11EA568B /* GlassBackground.swift in Sources */,

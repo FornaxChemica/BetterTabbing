@@ -37,10 +37,20 @@ final class WindowPreviewService: @unchecked Sendable {
     private let cache = NSCache<NSString, NSImage>()
     private let lock = NSLock()
     private var inFlightPreviewKeys = Set<String>()
+    private var lastSuccessfulCaptureDatesByKey: [String: Date] = [:]
+    private var successfulPreviewStoreCountSinceCleanup = 0
+    private var lastDiskCleanupDate = Date()
+    private var isDiskCleanupInProgress = false
+    private var volatileMemoryGeneration: UInt64 = 0
     private let previewImageStore = PreviewImageStore()
     private let captureLimiter = CaptureLimiter(limit: 2)
 
     private let isPreviewDebugLoggingEnabled = false
+    private let freshCaptureThrottleInterval: TimeInterval = 1.2
+    private let diskCleanupStoreInterval = 25
+    private let diskCleanupTimeInterval: TimeInterval = 10 * 60
+    private let diskCleanupMaximumImageCount = 200
+    private let diskCleanupMaximumAge: TimeInterval = 7 * 24 * 60 * 60
     private static let maximumPixelSize = CGSize(width: 1400, height: 900)
 
     private struct PreviewRequest: Sendable {
@@ -52,6 +62,7 @@ final class WindowPreviewService: @unchecked Sendable {
         let bounds: CGRect
         let inFlightKey: String
         let selectionGeneration: UInt64?
+        let volatileMemoryGeneration: UInt64
 
         var sourceSize: CGSize { bounds.size }
     }
@@ -59,11 +70,32 @@ final class WindowPreviewService: @unchecked Sendable {
     private init() {
         cache.countLimit = 80
         cache.totalCostLimit = 64 * 1024 * 1024
-        previewImageStore.cleanup(maximumImageCount: 200, maximumAge: 7 * 24 * 60 * 60)
+        _ = previewImageStore.cleanup(
+            maximumImageCount: diskCleanupMaximumImageCount,
+            maximumAge: diskCleanupMaximumAge
+        )
+    }
+
+    func trimVolatileMemory(reason: String) {
+        cache.removeAllObjects()
+
+        lock.lock()
+        volatileMemoryGeneration &+= 1
+        lastSuccessfulCaptureDatesByKey.removeAll(keepingCapacity: false)
+        lock.unlock()
+
+        print("[WindowPreviewService] Volatile preview memory trimmed: \(reason)")
     }
 
     func cachedPreview(
         for identity: PreviewIdentity
+    ) -> NSImage? {
+        cachedPreview(for: identity, storeDiskResultInMemory: true)
+    }
+
+    private func cachedPreview(
+        for identity: PreviewIdentity,
+        storeDiskResultInMemory: Bool
     ) -> NSImage? {
         for key in identity.cacheKeys {
             if let image = cache.object(forKey: key as NSString) {
@@ -74,7 +106,9 @@ final class WindowPreviewService: @unchecked Sendable {
 
         if let image = previewImageStore.image(for: identity) {
             log("disk cache hit key=\(identity.stableKey)")
-            storeInMemory(image, for: identity)
+            if storeDiskResultInMemory {
+                storeInMemory(image, for: identity)
+            }
             return image
         }
 
@@ -149,6 +183,7 @@ final class WindowPreviewService: @unchecked Sendable {
             let identity = requestIdentity(for: window, ownerPID: ownerPID)
             let resolvedOwnerPID = ownerPID ?? identity.ownerPID
             let inFlightKey = inFlightKey(for: identity)
+            let volatileMemoryGeneration = currentVolatileMemoryGeneration()
 
             if let cachedImage = cachedPreview(for: identity) {
                 log("posting cached preview id=\(windowID) title=\(window.title)")
@@ -160,9 +195,18 @@ final class WindowPreviewService: @unchecked Sendable {
                     title: window.title,
                     bounds: window.bounds,
                     inFlightKey: inFlightKey,
-                    selectionGeneration: selectionGeneration
+                    selectionGeneration: selectionGeneration,
+                    volatileMemoryGeneration: volatileMemoryGeneration
                 ))
-                continue
+
+                if !window.canCapturePreview {
+                    continue
+                }
+
+                if isFreshCaptureThrottled(inFlightKey) {
+                    log("skip fresh capture throttle id=\(windowID) title=\(window.title)")
+                    continue
+                }
             }
 
             if window.previewImage != nil {
@@ -185,7 +229,8 @@ final class WindowPreviewService: @unchecked Sendable {
                 title: window.title,
                 bounds: window.bounds,
                 inFlightKey: inFlightKey,
-                selectionGeneration: selectionGeneration
+                selectionGeneration: selectionGeneration,
+                volatileMemoryGeneration: volatileMemoryGeneration
             ))
         }
 
@@ -232,7 +277,10 @@ final class WindowPreviewService: @unchecked Sendable {
                     }
 
                     let quality = Self.previewQuality(for: image)
-                    let cachedImage = cachedPreview(for: request.previewIdentity)
+                    let cachedImage = cachedPreview(
+                        for: request.previewIdentity,
+                        storeDiskResultInMemory: shouldStoreVolatileMemory(for: request.volatileMemoryGeneration)
+                    )
                     let cachedQuality = cachedImage.map { Self.previewQuality(for: $0) }
                     if let rejectionReason = Self.previewRejectionReason(
                         quality: quality,
@@ -248,7 +296,12 @@ final class WindowPreviewService: @unchecked Sendable {
                     }
 
                     log("captured preview AX id=\(request.windowID) SC id=\(window.windowID) image=\(Int(image.size.width))x\(Int(image.size.height)) metrics=\(quality.debugSummary) title=\(request.title)")
-                    storePreview(image, for: request.previewIdentity)
+                    storePreview(
+                        image,
+                        for: request.previewIdentity,
+                        storeInVolatileMemory: shouldStoreVolatileMemory(for: request.volatileMemoryGeneration)
+                    )
+                    markSuccessfulCapture(request.inFlightKey)
                     postPreview(image, for: request)
                 } catch {
                     log("capture failed AX id=\(request.windowID) matchedSC id=\(window.windowID) title=\(request.title): \(error)")
@@ -386,6 +439,29 @@ final class WindowPreviewService: @unchecked Sendable {
         return true
     }
 
+    private func isFreshCaptureThrottled(_ key: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let lastCaptureDate = lastSuccessfulCaptureDatesByKey[key] else {
+            return false
+        }
+
+        return Date().timeIntervalSince(lastCaptureDate) < freshCaptureThrottleInterval
+    }
+
+    private func currentVolatileMemoryGeneration() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return volatileMemoryGeneration
+    }
+
+    private func shouldStoreVolatileMemory(for requestGeneration: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return requestGeneration == volatileMemoryGeneration
+    }
+
     private func requestIdentity(for window: WindowModel, ownerPID: pid_t?) -> PreviewIdentity {
         PreviewIdentity(
             ownerPID: ownerPID ?? window.previewIdentity.ownerPID,
@@ -402,6 +478,30 @@ final class WindowPreviewService: @unchecked Sendable {
         lock.lock()
         inFlightPreviewKeys.remove(key)
         lock.unlock()
+    }
+
+    private func markSuccessfulCapture(_ key: String) {
+        lock.lock()
+        let now = Date()
+        lastSuccessfulCaptureDatesByKey[key] = now
+        pruneSuccessfulCaptureDates(now: now)
+        lock.unlock()
+    }
+
+    private func pruneSuccessfulCaptureDates(now: Date) {
+        let cutoff = now.addingTimeInterval(-60)
+        lastSuccessfulCaptureDatesByKey = lastSuccessfulCaptureDatesByKey.filter { _, date in
+            date >= cutoff
+        }
+
+        guard lastSuccessfulCaptureDatesByKey.count > 300 else { return }
+
+        let newestEntries = lastSuccessfulCaptureDatesByKey
+            .sorted { lhs, rhs in lhs.value > rhs.value }
+            .prefix(300)
+            .map { ($0.key, $0.value) }
+
+        lastSuccessfulCaptureDatesByKey = Dictionary(uniqueKeysWithValues: newestEntries)
     }
 
     private func inFlightKey(for identity: PreviewIdentity) -> String {
@@ -425,9 +525,50 @@ final class WindowPreviewService: @unchecked Sendable {
         })
     }
 
-    private func storePreview(_ image: NSImage, for identity: PreviewIdentity) {
-        storeInMemory(image, for: identity)
+    private func storePreview(
+        _ image: NSImage,
+        for identity: PreviewIdentity,
+        storeInVolatileMemory: Bool
+    ) {
+        if storeInVolatileMemory {
+            storeInMemory(image, for: identity)
+        }
         previewImageStore.store(image, for: identity)
+        scheduleDiskCleanupIfNeeded()
+    }
+
+    private func scheduleDiskCleanupIfNeeded() {
+        lock.lock()
+        successfulPreviewStoreCountSinceCleanup += 1
+
+        let now = Date()
+        let shouldCleanup = successfulPreviewStoreCountSinceCleanup >= diskCleanupStoreInterval
+            || now.timeIntervalSince(lastDiskCleanupDate) >= diskCleanupTimeInterval
+
+        guard shouldCleanup, !isDiskCleanupInProgress else {
+            lock.unlock()
+            return
+        }
+
+        successfulPreviewStoreCountSinceCleanup = 0
+        lastDiskCleanupDate = now
+        isDiskCleanupInProgress = true
+        lock.unlock()
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+
+            let removedCount = self.previewImageStore.cleanup(
+                maximumImageCount: self.diskCleanupMaximumImageCount,
+                maximumAge: self.diskCleanupMaximumAge
+            )
+
+            self.lock.lock()
+            self.isDiskCleanupInProgress = false
+            self.lock.unlock()
+
+            print("[WindowPreviewService] Disk preview cache cleanup completed, removed \(removedCount) file(s)")
+        }
     }
 
     private func storeInMemory(_ image: NSImage, for identity: PreviewIdentity) {
@@ -749,13 +890,13 @@ private final class PreviewImageStore: @unchecked Sendable {
         }
     }
 
-    func cleanup(maximumImageCount: Int, maximumAge: TimeInterval) {
+    func cleanup(maximumImageCount: Int, maximumAge: TimeInterval) -> Int {
         guard let files = try? fileManager.contentsOfDirectory(
             at: directoryURL,
             includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles]
         ) else {
-            return
+            return 0
         }
 
         let now = Date()
@@ -765,8 +906,11 @@ private final class PreviewImageStore: @unchecked Sendable {
             return (url, date)
         }
 
+        var removedCount = 0
         for entry in entries where now.timeIntervalSince(entry.date) > maximumAge {
-            try? fileManager.removeItem(at: entry.url)
+            if (try? fileManager.removeItem(at: entry.url)) != nil {
+                removedCount += 1
+            }
         }
 
         let remaining = entries
@@ -774,8 +918,12 @@ private final class PreviewImageStore: @unchecked Sendable {
             .sorted { $0.date > $1.date }
 
         for entry in remaining.dropFirst(maximumImageCount) {
-            try? fileManager.removeItem(at: entry.url)
+            if (try? fileManager.removeItem(at: entry.url)) != nil {
+                removedCount += 1
+            }
         }
+
+        return removedCount
     }
 
     private func touchFiles(for identity: PreviewIdentity) {

@@ -16,6 +16,7 @@ struct BetterTabbingApp: App {
 
 struct MenuBarView: View {
     @EnvironmentObject var appState: AppState
+    @ObservedObject private var visitHistory = WindowVisitHistory.shared
 
     private var shortcutDisplay: String {
         "⌘ TAB previews · ⌥ TAB workspace"
@@ -33,6 +34,25 @@ struct MenuBarView: View {
                 Spacer()
                 Text(shortcutDisplay)
                     .foregroundStyle(.secondary)
+            }
+
+            Text("Window history: ⌘⇧Z back · ⌘⇧` forward")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            let recentVisits = visitHistory.recentVisitsForMenu()
+            if !recentVisits.isEmpty {
+                Divider()
+
+                Text("Recent Windows")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                ForEach(recentVisits) { visit in
+                    Button(visit.menuLabel) {
+                        visitHistory.jumpToVisit(visit)
+                    }
+                }
             }
 
             Divider()
@@ -142,6 +162,14 @@ struct GeneralSettingsView: View {
 struct ShortcutSettingsView: View {
     var body: some View {
         Form {
+            Section("Window History") {
+                KeyboardShortcutRow(title: "Back to previous window", shortcut: "⌘ ⇧ Z")
+                KeyboardShortcutRow(title: "Forward in history", shortcut: "⌘ ⇧ `")
+                Text("WindowLens remembers your last 10 window visits. A brief HUD confirms each step and when history is exhausted.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("While Switcher is Open") {
                 KeyboardShortcutRow(title: "Next application", shortcut: "TAB")
                 KeyboardShortcutRow(title: "Previous application", shortcut: "⇧ TAB")

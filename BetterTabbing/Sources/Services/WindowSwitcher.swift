@@ -93,6 +93,11 @@ final class WindowSwitcher: @unchecked Sendable {
 
         // Update cache order
         WindowCache.shared.moveAppToFront(pid: app.pid, fromOurSwitch: true)
+
+        if success, let window = app.windows.first(where: { !$0.isWindowlessPlaceholder }) {
+            let index = app.windows.firstIndex(where: { $0.id == window.id })
+            recordWindowVisit(app: app, window: window, windowIndex: index)
+        }
     }
 
     /// Switch to a specific window within an app
@@ -127,14 +132,14 @@ final class WindowSwitcher: @unchecked Sendable {
         if let index = windowIndex, index < axWindows.count {
             let axWindow = axWindows[index]
             print("[WindowSwitcher] Using window index \(index)")
-            raiseAndActivate(axWindow: axWindow, window: window, runningApp: runningApp, app: app)
+            raiseAndActivate(axWindow: axWindow, window: window, runningApp: runningApp, app: app, windowIndex: index)
             return
         }
 
         // Strategy 2: Try to find the window by CGWindowID
         if let axWindow = AXWindowHelper.getAXWindow(for: window.windowID, pid: app.pid) {
             print("[WindowSwitcher] Found window by ID \(window.windowID)")
-            raiseAndActivate(axWindow: axWindow, window: window, runningApp: runningApp, app: app)
+            raiseAndActivate(axWindow: axWindow, window: window, runningApp: runningApp, app: app, windowIndex: windowIndex)
             return
         }
 
@@ -146,7 +151,7 @@ final class WindowSwitcher: @unchecked Sendable {
             AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef)
 
             if let title = titleRef as? String, title == window.title {
-                raiseAndActivate(axWindow: axWindow, window: window, runningApp: runningApp, app: app)
+                raiseAndActivate(axWindow: axWindow, window: window, runningApp: runningApp, app: app, windowIndex: windowIndex)
                 return
             }
         }
@@ -160,7 +165,7 @@ final class WindowSwitcher: @unchecked Sendable {
                (title.hasPrefix(window.title) || window.title.hasPrefix(title) ||
                 title.contains(window.title) || window.title.contains(title)) {
                 print("[WindowSwitcher] Found window by partial title match: '\(title)'")
-                raiseAndActivate(axWindow: axWindow, window: window, runningApp: runningApp, app: app)
+                raiseAndActivate(axWindow: axWindow, window: window, runningApp: runningApp, app: app, windowIndex: windowIndex)
                 return
             }
         }
@@ -177,11 +182,18 @@ final class WindowSwitcher: @unchecked Sendable {
 
         if activated {
             WindowCache.shared.moveAppToFront(pid: app.pid, fromOurSwitch: true)
+            recordWindowVisit(app: app, window: window, windowIndex: windowIndex)
         }
     }
 
     /// Helper to raise a window and activate the app
-    private func raiseAndActivate(axWindow: AXUIElement, window: WindowModel, runningApp: NSRunningApplication, app: ApplicationModel) {
+    private func raiseAndActivate(
+        axWindow: AXUIElement,
+        window: WindowModel,
+        runningApp: NSRunningApplication,
+        app: ApplicationModel,
+        windowIndex: Int?
+    ) {
         // Unminimize if needed
         if window.isMinimized {
             var minimizedRef: CFTypeRef?
@@ -202,6 +214,13 @@ final class WindowSwitcher: @unchecked Sendable {
         // Update cache order
         if activated {
             WindowCache.shared.moveAppToFront(pid: app.pid, fromOurSwitch: true)
+            recordWindowVisit(app: app, window: window, windowIndex: windowIndex)
+        }
+    }
+
+    private func recordWindowVisit(app: ApplicationModel, window: WindowModel, windowIndex: Int?) {
+        Task { @MainActor in
+            WindowVisitHistory.shared.recordVisit(app: app, window: window, windowIndex: windowIndex)
         }
     }
 
