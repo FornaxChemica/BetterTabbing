@@ -3,6 +3,9 @@
 import AppKit
 import Foundation
 
+// Prefer brand masters in Brand/ and run scripts/prepare-brand-assets.swift.
+// This script remains as a procedural fallback when brand PNGs are unavailable.
+
 // Icon sizes needed for macOS .icns
 let sizes: [(size: Int, scale: Int, name: String)] = [
     (16, 1, "icon_16x16"),

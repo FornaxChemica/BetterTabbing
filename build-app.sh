@@ -94,9 +94,13 @@ EOF
 # Create PkgInfo
 echo -n "APPL????" > "${APP_NAME}.app/Contents/PkgInfo"
 
-# Generate app icon
+# Generate app icon from Brand/ masters when available
 echo -e "\n${YELLOW}[6/7] Generating app icon...${NC}"
-swift generate-icon.swift
+if [ -f "Brand/WindowLens_Logo-compressed.png" ]; then
+    swift scripts/prepare-brand-assets.swift
+else
+    swift generate-icon.swift
+fi
 
 if [ -f "AppIcon.icns" ]; then
     cp AppIcon.icns "${APP_NAME}.app/Contents/Resources/"

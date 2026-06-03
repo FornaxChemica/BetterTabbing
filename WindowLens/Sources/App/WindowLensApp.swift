@@ -7,10 +7,33 @@ struct WindowLensApp: App {
     @StateObject private var appState = AppState.shared
 
     var body: some Scene {
-        MenuBarExtra("WindowLens", systemImage: "rectangle.stack") {
+        MenuBarExtra {
             MenuBarView()
                 .environmentObject(appState)
+        } label: {
+            MenuBarIconLabel()
         }
+        .menuBarExtraStyle(.menu)
+    }
+}
+
+struct MenuBarIconLabel: View {
+    var body: some View {
+        if let icon = Self.templateMenuBarImage() {
+            Image(nsImage: icon)
+                .renderingMode(.template)
+        } else {
+            Image(systemName: "rectangle.on.rectangle")
+        }
+    }
+
+    private static func templateMenuBarImage() -> NSImage? {
+        guard let image = NSImage(named: "MenuBarIcon")?.copy() as? NSImage else {
+            return nil
+        }
+        image.size = NSSize(width: 18, height: 18)
+        image.isTemplate = true
+        return image
     }
 }
 

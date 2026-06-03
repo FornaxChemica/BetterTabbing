@@ -291,9 +291,11 @@ struct AboutView: View {
         Form {
             Section {
                 VStack(spacing: 16) {
-                    Image(systemName: "rectangle.stack")
-                        .font(.system(size: 56))
-                        .foregroundStyle(.blue)
+                    Image("AboutLogo")
+                        .resizable()
+                        .interpolation(.high)
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 72, height: 72)
 
                     Text("WindowLens")
                         .font(.title2)

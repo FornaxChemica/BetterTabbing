@@ -1,5 +1,9 @@
 # WindowLens
 
+<p align="center">
+  <img src="Brand/WindowLens_Logo-compressed.png" alt="WindowLens" width="128" height="128" />
+</p>
+
 WindowLens is an open-source macOS window switcher and native Cmd-Tab preview enhancer.
 
 Cmd-Tab remains the system app switcher owned by macOS and the Dock. WindowLens observes native Cmd-Tab selection and adds preview surfaces without replacing native switching behavior. Option-Tab opens the WindowLens workspace mode for focused window and workspace navigation.
