@@ -348,7 +348,7 @@ struct ResourceMonitorView: View {
                     .foregroundStyle(.secondary)
             }
 
-            // Temperature badge — always visible when we have data
+            // Temperature badge: always visible when we have data
             HStack(spacing: 3) {
                 Image(systemName: "thermometer.medium")
                     .font(.system(size: 8, weight: .semibold))
@@ -953,7 +953,7 @@ private struct AIInsightBar: View {
                 .foregroundStyle(iconColor)
 
             if showCharging {
-                // Charging state — show "Charging AI..." with animated dots
+                // Charging state: show "Charging AI..." with animated dots
                 HStack(spacing: 4) {
                     Text("Charging AI…")
                         .font(.system(size: 9, weight: .semibold))
@@ -961,7 +961,7 @@ private struct AIInsightBar: View {
                 }
                 Spacer()
             } else if !ollamaAvailable && insight == nil && !isLoading {
-                // Ollama not running — hint about hold-E
+                // Ollama not running: hint about hold-E
                 Text("Hold E for AI insight")
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(.quaternary)
@@ -994,7 +994,7 @@ private struct AIInsightBar: View {
                 .buttonStyle(.plain)
                 .help("Refresh insight")
             } else {
-                Text(ollamaAvailable ? "Ollama ready — hold E for insight" : "Hold E for AI insight")
+                Text(ollamaAvailable ? "Ollama ready. Hold E for insight." : "Hold E for AI insight")
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(.quaternary)
                 Spacer()
@@ -1008,7 +1008,7 @@ private struct AIInsightBar: View {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(Color.purple.opacity(backgroundOpacity))
 
-                // Charging progress bar — fills from left to right
+                // Charging progress bar: fills from left to right
                 if showCharging {
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {

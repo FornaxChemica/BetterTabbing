@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
 import Combine
@@ -38,6 +39,7 @@ enum ShortcutEvent {
     case nativeSwitchEnded
     case windowHistoryUndo
     case windowHistoryRedo
+    case activateWindowSlot(Int)
 }
 
 private final class KeyboardEventTapHealthTarget: NSObject {
@@ -108,11 +110,13 @@ final class KeyboardEventTap {
     private var installRetryCount = 0
 
     // Configuration
-    private var activationModifier: ModifierKey = .option  // OPTION+TAB for development
+    private var activationModifier: ModifierKey = .option
     private let activationKeyCode: UInt16 = UInt16(kVK_Tab)
     private let isCommandTabHandlingEnabled = false
+    private var cachedShortcuts = ShortcutPreferences()
 
     init() {
+        cachedShortcuts = UserPreferences.load().shortcuts
         print("[KeyboardEventTap] init")
         logStartupDiagnostics(context: "init")
         startHealthMonitoring()
@@ -296,11 +300,22 @@ final class KeyboardEventTap {
         print("[KeyboardEventTap] Activation modifier set to \(modifier.symbol); debug shortcut also active: \(debugActivationShortcut.name)")
     }
 
+    func reloadShortcutBindings(from preferences: UserPreferences) {
+        cachedShortcuts = preferences.shortcuts
+        if let modifier = cachedShortcuts.workspaceOpen.primaryModifier {
+            setActivationModifier(modifier)
+        }
+        print("[KeyboardEventTap] Reloaded shortcut bindings")
+    }
+
     private var configuredActivationShortcut: ActivationShortcut {
-        ActivationShortcut(
-            name: "\(activationModifier.symbol)+Tab",
-            keyCode: activationKeyCode,
-            modifiers: [activationModifier],
+        let workspace = cachedShortcuts.workspaceOpen
+        let modifiers = workspace.modifiers.isEmpty ? Set([activationModifier]) : workspace.modifiers
+        let name = workspace.displayString
+        return ActivationShortcut(
+            name: name,
+            keyCode: workspace.keyCode,
+            modifiers: modifiers,
             usesShiftForReverse: true,
             showsImmediately: false
         )
@@ -637,7 +652,8 @@ final class KeyboardEventTap {
                 onShortcutTriggered.send(.quitHoldCancelled)
                 return nil
             }
-            if keyCode == UInt16(kVK_ANSI_E) && isHoldingE {
+            if keyCode == UInt16(kVK_ANSI_E) && isHoldingE,
+               UserPreferences.load().modules.resourceMonitorEnabled {
                 let holdDuration = CFAbsoluteTimeGetCurrent() - eKeyDownTime
                 isHoldingE = false
                 if holdDuration < eHoldThreshold {
@@ -671,19 +687,25 @@ final class KeyboardEventTap {
         }
 
         // Window visit history undo/redo (global, only when switcher is inactive)
-        if !switcherVisible && !pendingActivation && !nativeCommandTabSessionActive && !isRepeat {
-            if flags.contains(.maskCommand),
-               flags.contains(.maskShift),
-               !flags.contains(.maskAlternate),
-               !flags.contains(.maskControl) {
-                if keyCode == UInt16(kVK_ANSI_Z) {
-                    onShortcutTriggered.send(.windowHistoryUndo)
-                    return nil
-                }
-                if keyCode == UInt16(kVK_ANSI_Grave) {
-                    onShortcutTriggered.send(.windowHistoryRedo)
-                    return nil
-                }
+        if !switcherVisible && !pendingActivation && !nativeCommandTabSessionActive && !isRepeat,
+           UserPreferences.load().modules.windowHistoryEnabled {
+            if cachedShortcuts.windowHistoryBack.matches(keyCode: keyCode, flags: flags) {
+                onShortcutTriggered.send(.windowHistoryUndo)
+                return nil
+            }
+            if cachedShortcuts.windowHistoryForward.matches(keyCode: keyCode, flags: flags) {
+                onShortcutTriggered.send(.windowHistoryRedo)
+                return nil
+            }
+        }
+
+        // Global window slot activation
+        if !isRepeat,
+           UserPreferences.load().modules.windowSlotsEnabled,
+           let slot = cachedShortcuts.matchesWindowSlotDigit(keyCode: keyCode, flags: flags) {
+            if !Self.isTerminalFrontmost() {
+                onShortcutTriggered.send(.activateWindowSlot(slot))
+                return nil
             }
         }
 
@@ -754,7 +776,8 @@ final class KeyboardEventTap {
                 }
 
                 // E = tap to toggle monitor, hold for AI insight
-                if keyCode == UInt16(kVK_ANSI_E) {
+                if cachedShortcuts.resourceMonitorToggle.matches(keyCode: keyCode, flags: flags),
+                   UserPreferences.load().modules.resourceMonitorEnabled {
                     let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
                     if isRepeat { return nil }
                     if !isHoldingE {
@@ -768,7 +791,8 @@ final class KeyboardEventTap {
                 }
 
                 // F = toggle process grouping in resource monitor
-                if keyCode == UInt16(kVK_ANSI_F) {
+                if keyCode == UInt16(kVK_ANSI_F),
+                   UserPreferences.load().modules.resourceMonitorEnabled {
                     let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
                     if isRepeat { return nil }
                     hadInteractionSinceActivation = true
@@ -878,7 +902,9 @@ final class KeyboardEventTap {
         }
 
         // Check for activation shortcut only when switcher is not visible.
-        if let shortcut = matchingActivationShortcut(for: keyCode, flags: flags), !pendingActivation {
+        if UserPreferences.load().modules.workspaceSwitcherEnabled,
+           let shortcut = matchingActivationShortcut(for: keyCode, flags: flags),
+           !pendingActivation {
             debugLog("Activation started via \(shortcut.name) (switcherVisible=\(switcherVisible))")
             previousFlags = flags
             modifierTracker.update(flags: flags)
@@ -916,5 +942,19 @@ final class KeyboardEventTap {
         }
 
         return Unmanaged.passUnretained(event)
+    }
+
+    private static let terminalBundleIdentifiers: Set<String> = [
+        "com.apple.Terminal",
+        "com.googlecode.iterm2",
+        "dev.warp.desktop",
+        "com.github.warp"
+    ]
+
+    private static func isTerminalFrontmost() -> Bool {
+        guard let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else {
+            return false
+        }
+        return terminalBundleIdentifiers.contains(bundleID)
     }
 }

@@ -84,7 +84,7 @@ cat > "${APP_NAME}.app/Contents/Info.plist" << EOF
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>LSUIElement</key>
-    <true/>
+    <false/>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2026 Sid Premkumar, Chakshu Jain, and contributors.</string>
 </dict>

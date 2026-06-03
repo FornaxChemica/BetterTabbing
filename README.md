@@ -14,6 +14,11 @@ Cmd-Tab remains the system app switcher owned by macOS and the Dock. WindowLens 
 - Option-Tab workspace mode for window-focused navigation.
 - Window-level selection within the active workspace surface.
 - Search-ready architecture for apps and windows.
+- **Settings window** — sidebar navigation (Features, General, Shortcuts, Excluded Apps, Window Slots, About) with light frosted-glass chrome and System Settings–style titlebar alignment.
+- **Window slots (1–9)** — globally jump to assigned windows; assign or clear slots from Settings.
+- **Window visit history** — back/forward across recent windows when the switcher is closed, with optional HUD feedback.
+- **Per-module toggles and shortcuts** — enable or disable Window Slots, Window History, Workspace Switcher, and Resource Monitor; customize bindings from Settings.
+- **Excluded apps** — hide chosen apps from the switcher list.
 
 ## Roadmap
 
@@ -43,6 +48,8 @@ cd WindowLens
 
 During development, you can also build and run from Xcode.
 
+Open **Settings** from the menu bar extra (⌘,) to configure modules, shortcuts, window slots, and excluded apps.
+
 ## Interaction Model
 
 | Shortcut | Behavior |
@@ -56,6 +63,9 @@ During development, you can also build and run from Xcode.
 | Cmd-2 | Scope pinned search to all windows |
 | Return | Open the selected search result or confirm selection |
 | Escape | Dismiss the WindowLens overlay |
+| ⌘, | Open Settings |
+| Modifier + 1–9 | Jump to window slot (when Window Slots is enabled) |
+| Configurable | Window history back / forward (see Settings → Features) |
 
 ## Architecture Notes
 

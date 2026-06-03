@@ -1,0 +1,229 @@
+import Carbon.HIToolbox
+import CoreGraphics
+import Foundation
+
+struct KeyboardShortcutBinding: Codable, Equatable, Hashable {
+    var keyCode: UInt16
+    var modifiers: Set<ModifierKey>
+
+    init(keyCode: UInt16, modifiers: Set<ModifierKey> = []) {
+        self.keyCode = keyCode
+        self.modifiers = modifiers
+    }
+
+    var displayString: String {
+        let modifierText = ModifierKey.displayOrder
+            .filter { modifiers.contains($0) }
+            .map(\.symbol)
+            .joined(separator: " ")
+        let keyText = Self.keyDisplayName(for: keyCode)
+        if modifierText.isEmpty {
+            return keyText
+        }
+        return "\(modifierText) \(keyText)"
+    }
+
+    var primaryModifier: ModifierKey? {
+        ModifierKey.displayOrder.first { modifiers.contains($0) }
+    }
+
+    func matches(keyCode: UInt16, flags: CGEventFlags) -> Bool {
+        guard keyCode == self.keyCode else { return false }
+        return Self.activeModifiers(from: flags) == modifiers
+    }
+
+    func matchesModifierOnly(_ flags: CGEventFlags, expected: ModifierKey) -> Bool {
+        Self.activeModifiers(from: flags) == [expected]
+    }
+
+    static func activeModifiers(from flags: CGEventFlags) -> Set<ModifierKey> {
+        var result = Set<ModifierKey>()
+        if flags.contains(.maskCommand) { result.insert(.command) }
+        if flags.contains(.maskShift) { result.insert(.shift) }
+        if flags.contains(.maskAlternate) { result.insert(.option) }
+        if flags.contains(.maskControl) { result.insert(.control) }
+        return result
+    }
+
+    static func keyDisplayName(for keyCode: UInt16) -> String {
+        switch Int(keyCode) {
+        case kVK_Tab: return "TAB"
+        case kVK_Space: return "Space"
+        case kVK_Return, kVK_ANSI_KeypadEnter: return "Return"
+        case kVK_Escape: return "Escape"
+        case kVK_ANSI_Grave: return "`"
+        case kVK_ANSI_Z: return "Z"
+        case kVK_ANSI_E: return "E"
+        case kVK_ANSI_Q: return "Q"
+        case kVK_ANSI_W: return "W"
+        case kVK_ANSI_1: return "1"
+        case kVK_ANSI_2: return "2"
+        case kVK_ANSI_3: return "3"
+        case kVK_ANSI_4: return "4"
+        case kVK_ANSI_5: return "5"
+        case kVK_ANSI_6: return "6"
+        case kVK_ANSI_7: return "7"
+        case kVK_ANSI_8: return "8"
+        case kVK_ANSI_9: return "9"
+        default:
+            return "Key \(keyCode)"
+        }
+    }
+}
+
+enum ShortcutAction: String, CaseIterable, Codable {
+    case windowHistoryBack
+    case windowHistoryForward
+    case windowSlotModifier
+    case workspaceOpen
+    case resourceMonitorToggle
+
+    var defaultBinding: KeyboardShortcutBinding {
+        switch self {
+        case .windowHistoryBack:
+            return KeyboardShortcutBinding(keyCode: UInt16(kVK_ANSI_Z), modifiers: [.command, .shift])
+        case .windowHistoryForward:
+            return KeyboardShortcutBinding(keyCode: UInt16(kVK_ANSI_Grave), modifiers: [.command, .shift])
+        case .windowSlotModifier:
+            return KeyboardShortcutBinding(keyCode: UInt16(kVK_ANSI_1), modifiers: [.control])
+        case .workspaceOpen:
+            return KeyboardShortcutBinding(keyCode: UInt16(kVK_Tab), modifiers: [.option])
+        case .resourceMonitorToggle:
+            return KeyboardShortcutBinding(keyCode: UInt16(kVK_ANSI_E), modifiers: [])
+        }
+    }
+
+    var requiresModifier: Bool {
+        switch self {
+        case .resourceMonitorToggle:
+            return false
+        default:
+            return true
+        }
+    }
+
+    var allowsDigitKey: Bool {
+        self == .windowSlotModifier
+    }
+}
+
+struct ShortcutPreferences: Codable, Equatable {
+    var windowHistoryBack: KeyboardShortcutBinding = ShortcutAction.windowHistoryBack.defaultBinding
+    var windowHistoryForward: KeyboardShortcutBinding = ShortcutAction.windowHistoryForward.defaultBinding
+    var windowSlotModifier: ModifierKey = .control
+    var workspaceOpen: KeyboardShortcutBinding = ShortcutAction.workspaceOpen.defaultBinding
+    var resourceMonitorToggle: KeyboardShortcutBinding = ShortcutAction.resourceMonitorToggle.defaultBinding
+
+    func binding(for action: ShortcutAction) -> KeyboardShortcutBinding {
+        switch action {
+        case .windowHistoryBack: return windowHistoryBack
+        case .windowHistoryForward: return windowHistoryForward
+        case .windowSlotModifier:
+            return KeyboardShortcutBinding(keyCode: UInt16(kVK_ANSI_1), modifiers: [windowSlotModifier])
+        case .workspaceOpen: return workspaceOpen
+        case .resourceMonitorToggle: return resourceMonitorToggle
+        }
+    }
+
+    mutating func setBinding(_ binding: KeyboardShortcutBinding, for action: ShortcutAction) {
+        switch action {
+        case .windowHistoryBack:
+            windowHistoryBack = binding
+        case .windowHistoryForward:
+            windowHistoryForward = binding
+        case .windowSlotModifier:
+            if let modifier = binding.primaryModifier {
+                windowSlotModifier = modifier
+            }
+        case .workspaceOpen:
+            workspaceOpen = binding
+        case .resourceMonitorToggle:
+            resourceMonitorToggle = binding
+        }
+    }
+
+    var windowSlotDisplayString: String {
+        "\(windowSlotModifier.symbol) 1-9"
+    }
+
+    func matchesWindowSlotDigit(keyCode: UInt16, flags: CGEventFlags) -> Int? {
+        guard let slot = Self.digitFromKeyCode(keyCode) else { return nil }
+        guard KeyboardShortcutBinding.activeModifiers(from: flags) == [windowSlotModifier] else { return nil }
+        return slot
+    }
+
+    static func digitFromKeyCode(_ keyCode: UInt16) -> Int? {
+        switch Int(keyCode) {
+        case kVK_ANSI_1: return 1
+        case kVK_ANSI_2: return 2
+        case kVK_ANSI_3: return 3
+        case kVK_ANSI_4: return 4
+        case kVK_ANSI_5: return 5
+        case kVK_ANSI_6: return 6
+        case kVK_ANSI_7: return 7
+        case kVK_ANSI_8: return 8
+        case kVK_ANSI_9: return 9
+        default: return nil
+        }
+    }
+}
+
+enum ShortcutBindingValidator {
+    static func validate(
+        _ binding: KeyboardShortcutBinding,
+        for action: ShortcutAction,
+        in preferences: ShortcutPreferences
+    ) -> String? {
+        if action.requiresModifier, binding.modifiers.isEmpty {
+            return "Add at least one modifier key."
+        }
+
+        if action == .workspaceOpen, binding.keyCode != UInt16(kVK_Tab) {
+            return "Workspace activation must use Tab."
+        }
+
+        if action == .windowSlotModifier {
+            guard binding.primaryModifier != nil,
+                  ShortcutPreferences.digitFromKeyCode(binding.keyCode) != nil else {
+                return "Press a modifier and a digit from 1-9."
+            }
+        }
+
+        if isReserved(binding) {
+            return "That shortcut is reserved by macOS."
+        }
+
+        if hasConflict(binding, for: action, in: preferences) {
+            return "That shortcut is already assigned."
+        }
+
+        return nil
+    }
+
+    static func hasConflict(
+        _ binding: KeyboardShortcutBinding,
+        for action: ShortcutAction,
+        in preferences: ShortcutPreferences
+    ) -> Bool {
+        for other in ShortcutAction.allCases where other != action {
+            if preferences.binding(for: other) == binding {
+                return true
+            }
+        }
+        return false
+    }
+
+    static func isReserved(_ binding: KeyboardShortcutBinding) -> Bool {
+        let reserved: [KeyboardShortcutBinding] = [
+            KeyboardShortcutBinding(keyCode: UInt16(kVK_ANSI_Q), modifiers: [.command]),
+            KeyboardShortcutBinding(keyCode: UInt16(kVK_ANSI_W), modifiers: [.command]),
+            KeyboardShortcutBinding(keyCode: UInt16(kVK_Tab), modifiers: [.command]),
+            KeyboardShortcutBinding(keyCode: UInt16(kVK_ANSI_Comma), modifiers: [.command]),
+        ]
+        return reserved.contains(binding)
+    }
+}
+
+private extension ModifierKey {
+    static let displayOrder: [ModifierKey] = [.command, .shift, .option, .control]
+}

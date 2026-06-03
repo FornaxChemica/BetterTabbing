@@ -87,7 +87,7 @@ final class ProcessResourceMonitor: @unchecked Sendable {
 
     /// System-wide CPU usage
     struct SystemCPU {
-        let usagePercent: Double  // 0–100
+        let usagePercent: Double  // 0-100
         let coreCount: Int
     }
 
@@ -115,11 +115,11 @@ final class ProcessResourceMonitor: @unchecked Sendable {
 
         // Match Activity Monitor: Used = App Memory + Wired + Compressed
         //
-        // App Memory ≈ (active - purgeable) pages — internal app allocations
-        // Wired     = wire_count pages — kernel/driver non-pageable memory
-        // Compressed = compressor_page_count — pages squeezed by the compressor
+        // App Memory ≈ (active - purgeable) pages: internal app allocations
+        // Wired     = wire_count pages: kernel/driver non-pageable memory
+        // Compressed = compressor_page_count: pages squeezed by the compressor
         //
-        // EXCLUDED: inactive pages (cached, reclaimable on demand — NOT "used")
+        // EXCLUDED: inactive pages (cached, reclaimable on demand; NOT "used")
         //           speculative pages (prefetched, also reclaimable)
         //           purgeable pages (can be discarded without paging)
         let appPages = UInt64(stats.internal_page_count)
@@ -208,7 +208,7 @@ final class ProcessResourceMonitor: @unchecked Sendable {
     /// Tries both Intel ("AppleSMC") and Apple Silicon ("AppleSMCKeysEndpoint") services,
     /// with architecture-specific sensor keys for each.
     private func readSMCTemperature() -> Double? {
-        // Try both service names — Intel uses "AppleSMC", Apple Silicon uses "AppleSMCKeysEndpoint"
+        // Try both service names: Intel uses "AppleSMC", Apple Silicon uses "AppleSMCKeysEndpoint"
         let serviceNames = ["AppleSMC", "AppleSMCKeysEndpoint"]
 
         for serviceName in serviceNames {
@@ -345,7 +345,7 @@ final class ProcessResourceMonitor: @unchecked Sendable {
         return UInt32(chars[0]) << 24 | UInt32(chars[1]) << 16 | UInt32(chars[2]) << 8 | UInt32(chars[3])
     }
 
-    // SMC kernel structs — use nested structs so Swift computes alignment
+    // SMC kernel structs: use nested structs so Swift computes alignment
     // padding automatically, matching the C kernel layout exactly.
     // The flattened approach was WRONG: it lost padding between nested struct
     // boundaries (e.g. after keyInfo_dataAttributes), shifting data8/bytes offsets.
@@ -480,7 +480,7 @@ final class ProcessResourceMonitor: @unchecked Sendable {
         guard actualSize > 0 else { return [] }
         let pidCount = Int(actualSize)
 
-        // NSWorkspace only knows about GUI apps — daemon/helper names come from proc_name/proc_pidpath
+        // NSWorkspace only knows about GUI apps; daemon/helper names come from proc_name/proc_pidpath
         var appNameByPid: [pid_t: String] = [:]
         var guiPids = Set<pid_t>()
         for app in NSWorkspace.shared.runningApplications {
@@ -529,7 +529,7 @@ final class ProcessResourceMonitor: @unchecked Sendable {
                     previousSamples[pid] = sample
                 } else {
                     // If this is a known GUI app, still include it with 0 values
-                    // rather than skipping — the user expects to see it
+                    // rather than skipping; the user expects to see it
                     if guiPids.contains(pid), let appName = appNameByPid[pid] {
                         entries.append(ProcessResourceEntry(
                             id: pid,
@@ -544,7 +544,7 @@ final class ProcessResourceMonitor: @unchecked Sendable {
             }
 
             // Only filter out truly negligible processes: < 100 KB AND 0% CPU
-            // BUT never filter out known GUI apps — user expects to see them
+            // BUT never filter out known GUI apps; user expects to see them
             if memoryBytes < 102_400 && cpuPercent < 0.1 && !guiPids.contains(pid) {
                 continue
             }

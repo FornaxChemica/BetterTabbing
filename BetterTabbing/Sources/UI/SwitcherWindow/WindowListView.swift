@@ -3,6 +3,7 @@ import SwiftUI
 
 struct WindowListView: View {
     @EnvironmentObject private var appState: AppState
+    @ObservedObject private var slotRegistry = WindowNumberRegistry.shared
 
     let app: ApplicationModel
     let selectedWindowIndex: Int
@@ -29,6 +30,11 @@ struct WindowListView: View {
                     liquidGlassGroup {
                         HStack(alignment: .center, spacing: app.hasMultipleWindows ? 18 : 0) {
                             ForEach(surfaceItems) { item in
+                                let slotNumber = slotRegistry.assignedSlot(for: item.window.windowID)
+                                    .flatMap { slot in
+                                        slotRegistry.assignment(for: slot)?.isAlive == true ? slot : nil
+                                    }
+
                                 WindowPreviewSurfaceView(
                                     window: item.window,
                                     appName: app.name,
@@ -37,12 +43,32 @@ struct WindowListView: View {
                                     distanceFromSelection: abs(item.index - selectedWindowIndex),
                                     presentationMode: presentationMode,
                                     maximumPreviewWidth: maximumPreviewWidth,
+                                    slotNumber: slotNumber,
                                     onHover: { isHovering in
                                         if isHovering {
                                             onWindowHovered?(item.index)
                                         }
                                     }
                                 )
+                                .contextMenu {
+                                    ForEach(1...9, id: \.self) { slot in
+                                        Button {
+                                            slotRegistry.reassign(
+                                                slot: slot,
+                                                to: item.window.windowID,
+                                                pid: app.pid,
+                                                appName: app.name,
+                                                windowTitle: item.window.title,
+                                                bundleIdentifier: app.bundleIdentifier
+                                            )
+                                        } label: {
+                                            slotAssignmentMenuLabel(
+                                                slot: slot,
+                                                currentWindowID: item.window.windowID
+                                            )
+                                        }
+                                    }
+                                }
                                 .onTapGesture {
                                     onWindowClicked?(item.index)
                                 }
@@ -156,6 +182,19 @@ struct WindowListView: View {
         }
     }
 
+    @ViewBuilder
+    private func slotAssignmentMenuLabel(slot: Int, currentWindowID: CGWindowID) -> some View {
+        if let occupant = slotRegistry.assignment(for: slot),
+           occupant.isAlive,
+           occupant.windowID != currentWindowID {
+            let title = occupant.windowTitle.isEmpty ? occupant.appName : "\(occupant.appName) · \(occupant.windowTitle)"
+            Text("Assign to slot \(slot) (\(title))")
+                .foregroundStyle(.secondary)
+        } else {
+            Text("Assign to slot \(slot)")
+        }
+    }
+
     private func maximumPreviewWidth(containerWidth: CGFloat) -> CGFloat? {
         guard usesAdaptiveWindowCarousel else { return nil }
 
@@ -199,6 +238,7 @@ private struct WindowPreviewSurfaceView: View {
     let distanceFromSelection: Int
     let presentationMode: SwitcherPresentationMode
     let maximumPreviewWidth: CGFloat?
+    var slotNumber: Int? = nil
     var onHover: ((Bool) -> Void)? = nil
 
     @State private var isHovered = false
@@ -262,6 +302,13 @@ private struct WindowPreviewSurfaceView: View {
                     .padding(.leading, geometry.metadataInset)
                     .padding(.bottom, geometry.metadataInset)
                     .zIndex(50)
+            }
+
+            if let slotNumber {
+                WindowSlotBadge(label: "\(slotNumber)")
+                    .padding(10)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                    .zIndex(60)
             }
         }
         .frame(width: geometry.visualSize.width, height: geometry.visualSize.height, alignment: .bottomLeading)

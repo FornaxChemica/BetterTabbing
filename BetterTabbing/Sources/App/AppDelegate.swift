@@ -6,9 +6,11 @@ import Combine
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var eventTap: KeyboardEventTap?
     private var panelManager: SwitcherPanelManager { SwitcherPanelManager.shared }
-    private var preferencesWindow: NSWindow?
+    private var settingsWindow: NSWindow?
+    private var suppressSettingsOnNextActivation = false
     private var cancellables = Set<AnyCancellable>()
     private var workspaceObserverTokens: [NSObjectProtocol] = []
+    private var windowSlotObserverTokens: [NSObjectProtocol] = []
     private var isNativeCommandTabSessionActive = false
     private var nativeFallbackWorkItem: DispatchWorkItem?
     private var nativeWindowSelectionWasAdjusted = false
@@ -25,11 +27,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let dockProcessSwitcherObserver = DockProcessSwitcherObserver()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Hide from Dock
-        NSApp.setActivationPolicy(.accessory)
+        NSApp.setActivationPolicy(.regular)
 
         setupEventTap()
         setupWorkspaceRecoveryObservers()
+        setupWindowSlotObservers()
         startPermissionMonitoring()
         eventTap?.logStartupDiagnostics(context: "applicationDidFinishLaunching")
 
@@ -41,12 +43,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         print("[WindowLens] App initialized successfully")
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        showSettingsWindow()
+        return true
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         let workspaceNotificationCenter = NSWorkspace.shared.notificationCenter
         for token in workspaceObserverTokens {
             workspaceNotificationCenter.removeObserver(token)
         }
         workspaceObserverTokens.removeAll()
+
+        for token in windowSlotObserverTokens {
+            workspaceNotificationCenter.removeObserver(token)
+        }
+        windowSlotObserverTokens.removeAll()
+
+        WindowNumberRegistry.shared.clearPersistedAssignments()
 
         dockProcessSwitcherObserver.stop()
         eventTap?.disable()
@@ -60,6 +74,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Task { @MainActor in
             await refreshPermissionGate(context: "application active")
         }
+
+        guard hasCompletedPermissionGate else { return }
+        guard !suppressSettingsOnNextActivation else {
+            suppressSettingsOnNextActivation = false
+            return
+        }
+        guard onboardingWindow == nil, permissionReadyWindow == nil else { return }
     }
 
     func applicationWillResignActive(_ notification: Notification) {
@@ -285,7 +306,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         if context == "launch" || context == "onboarding complete" {
-            showPermissionReadyWindow()
+            showSettingsWindow()
         }
     }
 
@@ -298,6 +319,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             onboardingWindow = nil
         } else if window === permissionReadyWindow {
             permissionReadyWindow = nil
+        } else if window === settingsWindow {
+            settingsWindow = nil
         }
     }
 
@@ -315,6 +338,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         WindowCache.shared.startMonitoring()
         WindowCache.shared.prefetchAsync()
         print("[WindowLens] WindowCache monitoring started context=\(context)")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            WindowNumberRegistry.shared.initializeFromCache()
+        }
     }
 
     private func setupEventTap() {
@@ -388,19 +415,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             .store(in: &cancellables)
 
-        // Listen for activation modifier changes from preferences
-        NotificationCenter.default.publisher(for: .activationModifierChanged)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] notification in
-                MainActor.assumeIsolated {
-                    if let modifier = notification.userInfo?["modifier"] as? ModifierKey {
-                        self?.eventTap?.setActivationModifier(modifier)
-                        print("[WindowLens] Activation modifier changed to: \(modifier.symbol)")
-                    }
-                }
-            }
-            .store(in: &cancellables)
-
         NotificationCenter.default.publisher(for: .activateSwitcherSearch)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
@@ -445,18 +459,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
 
-        // Option+Tab owns WindowLens workspace mode. Cmd+Tab remains native and
-        // is observed passively by the event tap.
-        eventTap?.setActivationModifier(.option)
-        print("[WindowLens] Loaded workspace activation modifier: \(ModifierKey.option.symbol)")
+        // Load shortcut bindings from preferences.
+        eventTap?.reloadShortcutBindings(from: AppState.shared.preferences)
+        print("[WindowLens] Loaded workspace activation shortcut: \(AppState.shared.preferences.shortcuts.workspaceOpen.displayString)")
 
-        // Listen for open preferences notification
-        NotificationCenter.default.publisher(for: .openPreferences)
+        NotificationCenter.default.publisher(for: .openSettings)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 MainActor.assumeIsolated {
-                    print("[WindowLens] Opening preferences window")
-                    self?.showPreferencesWindow()
+                    self?.showSettingsWindow()
+                }
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: .shortcutsDidChange)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.eventTap?.reloadShortcutBindings(from: AppState.shared.preferences)
                 }
             }
             .store(in: &cancellables)
@@ -494,34 +514,88 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         print("[WindowLens] Workspace recovery observers installed")
     }
 
-    private func showPreferencesWindow() {
-        // If window exists and is visible, just bring it to front
-        if let window = preferencesWindow, window.isVisible {
+    private func setupWindowSlotObservers() {
+        let workspaceNotificationCenter = NSWorkspace.shared.notificationCenter
+
+        let terminateToken = workspaceNotificationCenter.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { notification in
+            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else {
+                return
+            }
+            Task { @MainActor in
+                WindowNumberRegistry.shared.markAssignmentsForTerminatedPID(app.processIdentifier)
+            }
+        }
+
+        let launchToken = workspaceNotificationCenter.addObserver(
+            forName: NSWorkspace.didLaunchApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { notification in
+            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else {
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                Task { @MainActor in
+                    WindowNumberRegistry.shared.attemptResurrect(for: app)
+                }
+            }
+        }
+
+        windowSlotObserverTokens = [terminateToken, launchToken]
+        print("[WindowLens] Window slot observers installed")
+    }
+
+    private func showSettingsWindow() {
+        closeDuplicateSettingsWindows(keeping: settingsWindow)
+
+        if settingsWindow == nil {
+            settingsWindow = findExistingSettingsWindow()
+        }
+
+        if let window = settingsWindow {
             window.makeKeyAndOrderFront(nil)
+            DispatchQueue.main.async {
+                SettingsWindowConfigurator.applyPostLayoutChrome(to: window)
+            }
+            suppressSettingsOnNextActivation = true
             NSApp.activate(ignoringOtherApps: true)
             return
         }
 
-        // Create new preferences window
-        let preferencesView = PreferencesView()
+        let rootView = SettingsRootView()
             .environmentObject(AppState.shared)
 
-        let hostingController = NSHostingController(rootView: preferencesView)
-
+        let hostingController = NSHostingController(rootView: rootView)
         let window = NSWindow(contentViewController: hostingController)
-        window.title = "WindowLens Preferences"
-        window.styleMask = [.titled, .closable]
-        window.setContentSize(NSSize(width: 450, height: 320))
+        SettingsWindowConfigurator.configure(window)
+        window.setContentSize(NSSize(width: 720, height: 520))
         window.center()
-        window.isReleasedWhenClosed = false
+        window.delegate = self
 
-        preferencesWindow = window
-
-        // Show the window
+        settingsWindow = window
+        suppressSettingsOnNextActivation = true
         window.makeKeyAndOrderFront(nil)
+        DispatchQueue.main.async {
+            SettingsWindowConfigurator.applyPostLayoutChrome(to: window)
+        }
         NSApp.activate(ignoringOtherApps: true)
 
-        print("[WindowLens] Preferences window shown")
+        print("[WindowLens] Settings window shown")
+    }
+
+    private func findExistingSettingsWindow() -> NSWindow? {
+        NSApp.windows.first { $0.identifier == SettingsWindowConfigurator.windowIdentifier }
+    }
+
+    private func closeDuplicateSettingsWindows(keeping preferred: NSWindow?) {
+        for window in NSApp.windows where window.identifier == SettingsWindowConfigurator.windowIdentifier {
+            guard window !== preferred else { continue }
+            window.close()
+        }
     }
 
     private func handleShortcutEvent(_ event: ShortcutEvent) {
@@ -584,16 +658,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case .quitHoldCancelled:
             AppState.shared.cancelQuitHold()
         case .toggleResourceMonitor:
+            guard UserPreferences.load().modules.resourceMonitorEnabled else { return }
             AppState.shared.cancelEHold(triggeredAI: false)
             AppState.shared.toggleResourceMonitor()
         case .eHoldStarted:
+            guard UserPreferences.load().modules.resourceMonitorEnabled else { return }
             AppState.shared.startEHold()
         case .aiInsightRequested:
+            guard UserPreferences.load().modules.resourceMonitorEnabled else { return }
             AppState.shared.cancelEHold(triggeredAI: true)
             AppState.shared.requestAIInsightWithOllama()
         case .aiInsightCancelled:
+            guard UserPreferences.load().modules.resourceMonitorEnabled else { return }
             AppState.shared.cancelEHold(triggeredAI: false)
         case .toggleProcessGrouping:
+            guard UserPreferences.load().modules.resourceMonitorEnabled else { return }
             AppState.shared.isProcessGroupingEnabled.toggle()
         case .nativeSwitchStarted(let reverse):
             startNativeCommandTabSession(reverse: reverse)
@@ -611,16 +690,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             performWindowHistoryUndo()
         case .windowHistoryRedo:
             performWindowHistoryRedo()
+        case .activateWindowSlot(let slot):
+            if AppState.shared.isVisible {
+                panelManager.hide()
+                eventTap?.setSwitcherVisible(false)
+            }
+            let outcome = WindowNumberRegistry.shared.activate(slot: slot)
+            WindowSlotHUD.shared.present(outcome: outcome)
         }
     }
 
     private func performWindowHistoryUndo() {
+        guard UserPreferences.load().modules.windowHistoryEnabled else { return }
         guard !AppState.shared.isVisible else { return }
         let outcome = WindowVisitHistory.shared.undo()
         WindowHistoryHUD.shared.present(outcome: outcome)
     }
 
     private func performWindowHistoryRedo() {
+        guard UserPreferences.load().modules.windowHistoryEnabled else { return }
         guard !AppState.shared.isVisible else { return }
         let outcome = WindowVisitHistory.shared.redo()
         WindowHistoryHUD.shared.present(outcome: outcome)

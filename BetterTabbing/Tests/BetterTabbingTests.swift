@@ -1,5 +1,7 @@
+import Carbon.HIToolbox
+import CoreGraphics
 import XCTest
-@testable import BetterTabbing
+@testable import WindowLens
 
 final class BetterTabbingTests: XCTestCase {
 
@@ -151,6 +153,81 @@ final class BetterTabbingTests: XCTestCase {
         XCTAssertFalse(prefs.useSystemShortcut)
         XCTAssertFalse(prefs.showAllSpaces)
         XCTAssertTrue(prefs.showMinimizedWindows)
+        XCTAssertEqual(prefs.shortcuts.windowHistoryBack, ShortcutAction.windowHistoryBack.defaultBinding)
+        XCTAssertEqual(prefs.shortcuts.windowSlotModifier, .control)
+    }
+
+    // MARK: - KeyboardShortcutBinding Tests
+
+    func testKeyboardShortcutBindingMatchesDefaultHistoryBack() {
+        let binding = ShortcutAction.windowHistoryBack.defaultBinding
+        var flags = CGEventFlags()
+        flags.insert(.maskCommand)
+        flags.insert(.maskShift)
+
+        XCTAssertTrue(binding.matches(keyCode: UInt16(kVK_ANSI_Z), flags: flags))
+        XCTAssertFalse(binding.matches(keyCode: UInt16(kVK_ANSI_Z), flags: [.maskCommand]))
+    }
+
+    func testKeyboardShortcutBindingDisplayString() {
+        let binding = ShortcutAction.windowHistoryBack.defaultBinding
+        XCTAssertEqual(binding.displayString, "⌘ ⇧ Z")
+    }
+
+    func testShortcutPreferencesCodableRoundTrip() throws {
+        var prefs = UserPreferences()
+        prefs.shortcuts.windowHistoryBack = KeyboardShortcutBinding(
+            keyCode: UInt16(kVK_ANSI_X),
+            modifiers: [.command, .option]
+        )
+
+        let data = try JSONEncoder().encode(prefs)
+        let decoded = try JSONDecoder().decode(UserPreferences.self, from: data)
+
+        XCTAssertEqual(decoded.shortcuts.windowHistoryBack, prefs.shortcuts.windowHistoryBack)
+    }
+
+    func testShortcutBindingValidatorDetectsDuplicate() {
+        var preferences = ShortcutPreferences()
+        let duplicate = preferences.windowHistoryBack
+
+        let error = ShortcutBindingValidator.validate(
+            duplicate,
+            for: .windowHistoryForward,
+            in: preferences
+        )
+
+        XCTAssertNotNil(error)
+        XCTAssertEqual(error, "That shortcut is already assigned.")
+    }
+
+    func testShortcutBindingValidatorDetectsReservedShortcut() {
+        let reserved = KeyboardShortcutBinding(
+            keyCode: UInt16(kVK_ANSI_Q),
+            modifiers: [.command]
+        )
+
+        let error = ShortcutBindingValidator.validate(
+            reserved,
+            for: .windowHistoryBack,
+            in: ShortcutPreferences()
+        )
+
+        XCTAssertNotNil(error)
+        XCTAssertEqual(error, "That shortcut is reserved by macOS.")
+    }
+
+    func testWindowSlotDigitMatchingUsesConfiguredModifier() {
+        var preferences = ShortcutPreferences()
+        preferences.windowSlotModifier = .option
+
+        var flags = CGEventFlags()
+        flags.insert(.maskAlternate)
+
+        XCTAssertEqual(preferences.matchesWindowSlotDigit(keyCode: UInt16(kVK_ANSI_3), flags: flags), 3)
+
+        flags = [.maskControl]
+        XCTAssertNil(preferences.matchesWindowSlotDigit(keyCode: UInt16(kVK_ANSI_3), flags: flags))
     }
 
     // MARK: - Helpers

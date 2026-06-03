@@ -187,19 +187,34 @@ final class AXWindowHelper {
         }
 
         // For larger counts, run in parallel
-        let lock = NSLock()
-        var allTitles: [CGWindowID: String] = [:]
+        final class TitleAccumulator: @unchecked Sendable {
+            private let lock = NSLock()
+            private var titles: [CGWindowID: String] = [:]
 
-        DispatchQueue.concurrentPerform(iterations: pids.count) { index in
-            let pid = Array(pids)[index]
-            let titles = getWindowTitles(for: pid)
+            func merge(_ newTitles: [CGWindowID: String]) {
+                lock.lock()
+                titles.merge(newTitles) { _, new in new }
+                lock.unlock()
+            }
 
-            lock.lock()
-            allTitles.merge(titles) { _, new in new }
-            lock.unlock()
+            func result() -> [CGWindowID: String] {
+                lock.lock()
+                defer { lock.unlock() }
+                return titles
+            }
         }
 
-        return allTitles
+        let accumulator = TitleAccumulator()
+        let pidList = Array(pids)
+
+        DispatchQueue.concurrentPerform(iterations: pidList.count) { index in
+            let pid = pidList[index]
+            let titles = getWindowTitles(for: pid)
+
+            accumulator.merge(titles)
+        }
+
+        return accumulator.result()
     }
 }
 

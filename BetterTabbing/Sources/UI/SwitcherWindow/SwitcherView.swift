@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SwitcherView: View {
     @EnvironmentObject var appState: AppState
+    @ObservedObject private var slotRegistry = WindowNumberRegistry.shared
     @FocusState private var isSearchFocused: Bool
 
     /// Whether to show search results list (when searching with query)
@@ -61,9 +62,13 @@ struct SwitcherView: View {
 
     private var currentAppWindowOverlay: some View {
         VStack(spacing: 12) {
-            if let selectedApp = appState.selectedApp {
-                CurrentAppHeader(app: selectedApp)
+            HStack {
+                Spacer(minLength: 0)
+                appRail
+                Spacer(minLength: 0)
+            }
 
+            if let selectedApp = appState.selectedApp {
                 WindowListView(
                     app: selectedApp,
                     selectedWindowIndex: appState.selectedWindowIndex,
@@ -227,12 +232,14 @@ struct SwitcherView: View {
             HStack(spacing: 9) {
                 ForEach(Array(appState.filteredApplications.enumerated()), id: \.element.id) { index, app in
                     let isSelected = index == appState.selectedAppIndex
+                    let slotNumbers = slotRegistry.slotNumbers(for: app.pid)
 
                     AppRailToken(
                         app: app,
                         isSelected: isSelected,
                         isQuitHoldActive: appState.isQuitHoldActive && index == appState.quitTargetAppIndex,
-                        quitHoldProgress: isSelected ? appState.quitHoldProgress : 0
+                        quitHoldProgress: isSelected ? appState.quitHoldProgress : 0,
+                        windowSlotNumbers: slotNumbers
                     )
                     .onTapGesture {
                         appState.selectedAppIndex = index
@@ -248,23 +255,30 @@ struct SwitcherView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
-        }
-        .frame(maxWidth: min(calculateWidth() - 120, 760))
-        .background(
-            GlassBackground(
-                cornerRadius: 18,
-                tintOpacity: 0.035,
-                strokeOpacity: 0.06,
-                shadowOpacity: 0.06,
-                shadowRadius: 12,
-                shadowYOffset: 6
+            .background(
+                GlassBackground(
+                    cornerRadius: 18,
+                    tintOpacity: 0.035,
+                    strokeOpacity: 0.06,
+                    shadowOpacity: 0.06,
+                    shadowRadius: 12,
+                    shadowYOffset: 6
+                )
             )
-        )
+        }
+        .frame(width: appRailWidth())
         .onContinuousHover { phase in
             if case .active = phase {
                 appState.markMouseNavigation(at: NSEvent.mouseLocation)
             }
         }
+    }
+
+    private func appRailWidth() -> CGFloat {
+        let appCount = max(appState.filteredApplications.count, 1)
+        let estimatedChipWidth = CGFloat(min(appCount, 10)) * 52
+
+        return min(max(estimatedChipWidth + 28, 160), 760)
     }
 
     /// Calculate optimal width based on number of apps
@@ -280,7 +294,10 @@ struct SwitcherView: View {
         }
 
         if appState.workspaceMode == .currentAppWindows {
-            return nativePreviewWidth(for: appState.selectedApp?.windows.count ?? 1)
+            let windowCount = appState.selectedApp?.windows.count ?? 1
+            let appCount = appState.filteredApplications.count
+            let railWidth = CGFloat(min(appCount, 10)) * 58 + 120
+            return max(nativePreviewWidth(for: windowCount), min(max(railWidth, 780), 1040))
         }
 
         if showSearchResults {
@@ -408,6 +425,7 @@ private struct AppRailToken: View {
     let isSelected: Bool
     let isQuitHoldActive: Bool
     let quitHoldProgress: CGFloat
+    let windowSlotNumbers: [Int]
 
     var body: some View {
         HStack(spacing: isSelected ? 8 : 0) {
@@ -427,6 +445,11 @@ private struct AppRailToken: View {
                         lineWidth: 2,
                         size: 40
                     )
+                }
+
+                if let badgeLabel = WindowSlotBadge.railLabel(for: windowSlotNumbers) {
+                    WindowSlotBadge(label: badgeLabel)
+                        .offset(x: 12, y: -12)
                 }
             }
 
@@ -542,7 +565,8 @@ extension Notification.Name {
     static let switcherDismissedByClickOutside = Notification.Name("switcherDismissedByClickOutside")
     static let switcherConfirmedByMouseClick = Notification.Name("switcherConfirmedByMouseClick")
     static let activationModifierChanged = Notification.Name("activationModifierChanged")
-    static let openPreferences = Notification.Name("openPreferences")
+    static let openSettings = Notification.Name("openSettings")
+    static let shortcutsDidChange = Notification.Name("shortcutsDidChange")
     static let activateSwitcherSearch = Notification.Name("activateSwitcherSearch")
     static let workspaceWindowActivated = Notification.Name("workspaceWindowActivated")
     static let reinstallEventTap = Notification.Name("reinstallEventTap")

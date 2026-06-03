@@ -66,7 +66,7 @@ final class AppState: ObservableObject {
     @Published var aiInsightLoading = false
     /// Whether Ollama is reachable (checked once per monitor open)
     @Published var ollamaAvailable = false
-    /// Prevents re-querying every poll — only once per monitor session
+    /// Prevents re-querying every poll; only once per monitor session
     private var hasRequestedInsight = false
     /// Timer that clears the AI insight after it becomes stale
     private var aiInsightCooldownTimer: Timer?
@@ -84,7 +84,7 @@ final class AppState: ObservableObject {
     @Published var eHoldProgress: CGFloat = 0.0
     private var eHoldTimer: Timer?
     private var eHoldStartTime: Date?
-    /// Duration for the charging bar to fill (visual only — actual threshold is in KeyboardEventTap)
+    /// Duration for the charging bar to fill (visual only; actual threshold is in KeyboardEventTap)
     private let eHoldAnimationDuration: TimeInterval = 0.5
 
     // MARK: - Quit Hold State
@@ -101,6 +101,9 @@ final class AppState: ObservableObject {
     @Published var preferences = UserPreferences.load() {
         didSet {
             handleWindowEnumerationPreferenceChange(from: oldValue)
+            if oldValue.shortcuts != preferences.shortcuts {
+                NotificationCenter.default.post(name: .shortcutsDidChange, object: nil)
+            }
             preferences.save()
         }
     }
@@ -777,13 +780,13 @@ final class AppState: ObservableObject {
         hasRequestedInsight = false
 
         // Quick reachability check (non-blocking, 2s timeout)
-        // Used to show the right hint text — hold-E will start Ollama regardless
+        // Used to show the right hint text; hold-E will start Ollama regardless
         Task {
             let available = await OllamaClient.shared.isAvailable()
             await MainActor.run { self.ollamaAvailable = available }
         }
 
-        // Initial "priming" fetch — CPU% will be 0 on first call (no delta yet)
+        // Initial "priming" fetch; CPU% will be 0 on first call (no delta yet)
         refreshResourceData()
 
         // Poll every 1.5 seconds for smooth updates
@@ -801,14 +804,14 @@ final class AppState: ObservableObject {
         systemMemory = nil
         systemCPU = nil
         cpuTemperature = nil
-        // Intentionally keep cpuHistory & memoryHistory — 960 bytes in RAM,
+        // Intentionally keep cpuHistory & memoryHistory; 960 bytes in RAM,
         // lets the graph show prior context when reopened.
         aiInsightCooldownTimer?.invalidate()
         aiInsightCooldownTimer = nil
         hasRequestedInsight = false
         ProcessResourceMonitor.shared.resetSamples()
 
-        // Kill Ollama if we started it — don't leave it running
+        // Kill Ollama if we started it; don't leave it running
         Task { await OllamaClient.shared.shutdownIfWeStarted() }
     }
 
@@ -841,7 +844,7 @@ final class AppState: ObservableObject {
 
     // MARK: - AI Insight (Hold E)
 
-    /// Called when user holds E — starts Ollama if needed, queries, then shuts down.
+    /// Called when user holds E; starts Ollama if needed, queries, then shuts down.
     func requestAIInsightWithOllama() {
         guard !aiInsightLoading else { return }
 

@@ -1,0 +1,6 @@
+#!/bin/sh
+# Strip Cursor agent co-author trailer from commit messages.
+COMMIT_MSG_FILE=$1
+if [ -n "$COMMIT_MSG_FILE" ] && [ -f "$COMMIT_MSG_FILE" ]; then
+  sed -i '' '/^Co-authored-by: Cursor <cursoragent@cursor.com>$/d' "$COMMIT_MSG_FILE"
+fi

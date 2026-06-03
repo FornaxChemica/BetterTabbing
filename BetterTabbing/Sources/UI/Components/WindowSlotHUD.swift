@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 
 @MainActor
-final class WindowHistoryHUD {
-    static let shared = WindowHistoryHUD()
+final class WindowSlotHUD {
+    static let shared = WindowSlotHUD()
 
     private var panel: NSPanel?
     private var hideTask: Task<Void, Never>?
@@ -11,10 +11,12 @@ final class WindowHistoryHUD {
 
     private init() {}
 
-    func present(outcome: WindowHistoryOutcome) {
+    func present(outcome: WindowSlotOutcome) {
+        guard outcome != .moduleDisabled else { return }
+
         hideTask?.cancel()
 
-        let rootView = WindowHistoryHUDView(outcome: outcome)
+        let rootView = WindowSlotHUDView(outcome: outcome)
         let hostingController = NSHostingController(rootView: rootView)
 
         let panel = self.panel ?? makePanel(hostingController: hostingController)
@@ -53,7 +55,7 @@ final class WindowHistoryHUD {
         }
     }
 
-    private func makePanel(hostingController: NSHostingController<WindowHistoryHUDView>) -> NSPanel {
+    private func makePanel(hostingController: NSHostingController<WindowSlotHUDView>) -> NSPanel {
         let panel = NSPanel(
             contentRect: .zero,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -97,14 +99,22 @@ final class WindowHistoryHUD {
     }
 }
 
-private struct WindowHistoryHUDView: View {
-    let outcome: WindowHistoryOutcome
+private struct WindowSlotHUDView: View {
+    let outcome: WindowSlotOutcome
+
+    private var iconTint: Color {
+        if outcome.isSuccess {
+            Color.primary.opacity(0.82)
+        } else {
+            Color.secondary.opacity(0.82)
+        }
+    }
 
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: outcome.systemImageName)
                 .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(.primary.opacity(0.82))
+                .foregroundStyle(iconTint)
                 .frame(width: 22)
 
             VStack(alignment: .leading, spacing: 2) {

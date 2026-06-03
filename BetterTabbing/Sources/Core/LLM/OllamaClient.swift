@@ -1,7 +1,7 @@
 import Foundation
 
 /// Minimal Ollama HTTP client with lifecycle management.
-/// Can start/stop `ollama serve` on demand — kills it when done
+/// Can start/stop `ollama serve` on demand; kills it when done
 /// so we don't leave a server running the user didn't ask for.
 actor OllamaClient {
     static let shared = OllamaClient()
@@ -128,7 +128,7 @@ actor OllamaClient {
                     "content": """
                     You are a concise macOS system monitor embedded in an app switcher. \
                     Given process resource data, identify and group where resources are being hogged. \
-                    Name the top offenders by memory and CPU. No suggestions, no advice — just report \
+                    Name the top offenders by memory and CPU. No suggestions, no advice; just report \
                     what's using the most. Use process names the user would recognize. 2 sentences max, \
                     never exceed 180 characters total.
                     """

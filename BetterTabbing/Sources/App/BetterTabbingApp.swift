@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @main
@@ -6,7 +7,6 @@ struct BetterTabbingApp: App {
     @StateObject private var appState = AppState.shared
 
     var body: some Scene {
-        // Menu bar only - no dock icon
         MenuBarExtra("WindowLens", systemImage: "rectangle.stack") {
             MenuBarView()
                 .environmentObject(appState)
@@ -18,8 +18,16 @@ struct MenuBarView: View {
     @EnvironmentObject var appState: AppState
     @ObservedObject private var visitHistory = WindowVisitHistory.shared
 
-    private var shortcutDisplay: String {
-        "⌘ TAB previews · ⌥ TAB workspace"
+    private var workspaceShortcut: String {
+        appState.preferences.shortcuts.workspaceOpen.displayString
+    }
+
+    private var historyBackShortcut: String {
+        appState.preferences.shortcuts.windowHistoryBack.displayString
+    }
+
+    private var historyForwardShortcut: String {
+        appState.preferences.shortcuts.windowHistoryForward.displayString
     }
 
     var body: some View {
@@ -30,13 +38,13 @@ struct MenuBarView: View {
             Divider()
 
             HStack {
-                Text("Shortcut:")
+                Text("Workspace:")
                 Spacer()
-                Text(shortcutDisplay)
+                Text(workspaceShortcut)
                     .foregroundStyle(.secondary)
             }
 
-            Text("Window history: ⌘⇧Z back · ⌘⇧` forward")
+            Text("History: \(historyBackShortcut) back · \(historyForwardShortcut) forward")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -57,9 +65,8 @@ struct MenuBarView: View {
 
             Divider()
 
-            Button("Preferences...") {
-                print("[MenuBar] Preferences button clicked")
-                NotificationCenter.default.post(name: .openPreferences, object: nil)
+            Button("Settings…") {
+                NotificationCenter.default.post(name: .openSettings, object: nil)
             }
             .keyboardShortcut(",", modifiers: .command)
 
@@ -81,217 +88,5 @@ struct MenuBarView: View {
             .keyboardShortcut("q", modifiers: .command)
         }
         .padding(8)
-    }
-}
-
-// Placeholder for PreferencesView
-struct PreferencesView: View {
-    @EnvironmentObject var appState: AppState
-
-    var body: some View {
-        TabView {
-            GeneralSettingsView()
-                .tabItem {
-                    Label("General", systemImage: "gear")
-                }
-
-            ExcludedAppsSettingsView()
-                .tabItem {
-                    Label("Excluded Apps", systemImage: "eye.slash")
-                }
-
-            ShortcutSettingsView()
-                .tabItem {
-                    Label("Shortcuts", systemImage: "keyboard")
-                }
-
-            AboutView()
-                .tabItem {
-                    Label("About", systemImage: "info.circle")
-                }
-        }
-        .frame(width: 450, height: 350)
-        .environmentObject(appState)
-    }
-}
-
-struct GeneralSettingsView: View {
-    @EnvironmentObject var appState: AppState
-
-    var body: some View {
-        Form {
-            Section {
-                Toggle("Launch at login", isOn: $appState.preferences.launchAtLogin)
-            }
-
-            Section("Interaction Systems") {
-                KeyboardShortcutRow(title: "Native preview sync", shortcut: "⌘ TAB")
-                KeyboardShortcutRow(title: "Workspace mode", shortcut: "⌥ TAB")
-
-                Text("Command-Tab remains native. Option-Tab opens WindowLens workspace mode with focused navigation and search.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Quit Hold Duration") {
-                HStack {
-                    Text(String(format: "%.1fs", appState.preferences.quitHoldDuration))
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 36, alignment: .trailing)
-
-                    Slider(value: $appState.preferences.quitHoldDuration, in: 0.5...5.0, step: 0.5)
-
-                }
-
-                Text("How long to hold Q in the switcher to quit an app.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Windows") {
-                Toggle("Show windows from all Spaces", isOn: $appState.preferences.showAllSpaces)
-                Toggle("Show minimized windows", isOn: $appState.preferences.showMinimizedWindows)
-            }
-        }
-        .formStyle(.grouped)
-        .padding()
-    }
-}
-
-struct ShortcutSettingsView: View {
-    var body: some View {
-        Form {
-            Section("Window History") {
-                KeyboardShortcutRow(title: "Back to previous window", shortcut: "⌘ ⇧ Z")
-                KeyboardShortcutRow(title: "Forward in history", shortcut: "⌘ ⇧ `")
-                Text("WindowLens remembers your last 10 window visits. A brief HUD confirms each step and when history is exhausted.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("While Switcher is Open") {
-                KeyboardShortcutRow(title: "Next application", shortcut: "TAB")
-                KeyboardShortcutRow(title: "Previous application", shortcut: "⇧ TAB")
-                KeyboardShortcutRow(title: "Next window", shortcut: "`")
-                KeyboardShortcutRow(title: "Previous window", shortcut: "⇧ `")
-                KeyboardShortcutRow(title: "Quit app", shortcut: "Hold Q")
-                KeyboardShortcutRow(title: "Search", shortcut: "Return")
-                KeyboardShortcutRow(title: "Confirm", shortcut: "Release modifier")
-                KeyboardShortcutRow(title: "Cancel", shortcut: "Escape")
-            }
-        }
-        .formStyle(.grouped)
-        .padding()
-    }
-}
-
-struct KeyboardShortcutRow: View {
-    let title: String
-    let shortcut: String
-
-    var body: some View {
-        HStack {
-            Text(title)
-            Spacer()
-            Text(shortcut)
-                .foregroundStyle(.secondary)
-                .font(.system(.body, design: .monospaced))
-        }
-    }
-}
-
-struct ExcludedAppsSettingsView: View {
-    @EnvironmentObject var appState: AppState
-    @State private var runningApps: [(name: String, bundleID: String, icon: NSImage)] = []
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Excluded apps will not appear in the switcher.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
-
-            List {
-                ForEach(runningApps, id: \.bundleID) { app in
-                    let isExcluded = appState.preferences.excludedBundleIDs.contains(app.bundleID)
-                    HStack(spacing: 10) {
-                        Image(nsImage: app.icon)
-                            .resizable()
-                            .frame(width: 20, height: 20)
-                        Text(app.name)
-                            .lineLimit(1)
-                        Spacer()
-                        Toggle("", isOn: Binding(
-                            get: { isExcluded },
-                            set: { exclude in
-                                if exclude {
-                                    appState.preferences.excludedBundleIDs.append(app.bundleID)
-                                } else {
-                                    appState.preferences.excludedBundleIDs.removeAll { $0 == app.bundleID }
-                                }
-                                WindowCache.shared.invalidate()
-                                WindowCache.shared.prefetchAsync()
-                            }
-                        ))
-                        .toggleStyle(.switch)
-                        .labelsHidden()
-                    }
-                    .padding(.vertical, 2)
-                }
-            }
-        }
-        .onAppear {
-            loadRunningApps()
-        }
-    }
-
-    private func loadRunningApps() {
-        let apps = NSWorkspace.shared.runningApplications
-            .filter { $0.activationPolicy == .regular && $0.bundleIdentifier != Bundle.main.bundleIdentifier }
-            .compactMap { app -> (name: String, bundleID: String, icon: NSImage)? in
-                guard let name = app.localizedName,
-                      let bundleID = app.bundleIdentifier else { return nil }
-                let icon = app.icon ?? NSImage(named: NSImage.applicationIconName) ?? NSImage()
-                return (name: name, bundleID: bundleID, icon: icon)
-            }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-
-        // Include currently excluded apps that aren't running (so user can un-exclude them)
-        var result = apps
-        for bundleID in appState.preferences.excludedBundleIDs {
-            if !result.contains(where: { $0.bundleID == bundleID }) {
-                let name = bundleID.components(separatedBy: ".").last ?? bundleID
-                result.append((name: name, bundleID: bundleID, icon: NSImage(named: NSImage.applicationIconName) ?? NSImage()))
-            }
-        }
-
-        runningApps = result
-    }
-}
-
-struct AboutView: View {
-    var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "rectangle.stack")
-                .font(.system(size: 64))
-                .foregroundStyle(.blue)
-
-            Text("WindowLens")
-                .font(.title)
-                .fontWeight(.bold)
-
-            Text("Version 1.0.0")
-                .foregroundStyle(.secondary)
-
-            Text("macOS window switching and native Cmd-Tab preview augmentation")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-
-            Spacer()
-        }
-        .padding()
     }
 }

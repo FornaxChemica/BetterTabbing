@@ -23,6 +23,19 @@ struct UserPreferences: Codable {
     // Excluded Apps
     var excludedBundleIDs: [String] = []
 
+    // Feature modules
+    var modules = ModuleSettings()
+
+    // Keyboard shortcuts
+    var shortcuts = ShortcutPreferences()
+
+    struct ModuleSettings: Codable, Equatable {
+        var windowSlotsEnabled: Bool = true
+        var windowHistoryEnabled: Bool = true
+        var workspaceSwitcherEnabled: Bool = true
+        var resourceMonitorEnabled: Bool = true
+    }
+
     enum Theme: String, Codable, CaseIterable {
         case system
         case light

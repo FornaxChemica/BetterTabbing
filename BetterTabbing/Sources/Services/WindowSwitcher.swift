@@ -1,6 +1,23 @@
 import AppKit
 import ApplicationServices
 
+private final class BoolBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue = false
+
+    func set(_ newValue: Bool) {
+        lock.lock()
+        storedValue = newValue
+        lock.unlock()
+    }
+
+    func get() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedValue
+    }
+}
+
 /// Fast window switcher - no actor overhead
 final class WindowSwitcher: @unchecked Sendable {
     static let shared = WindowSwitcher()
@@ -67,15 +84,15 @@ final class WindowSwitcher: @unchecked Sendable {
             config.createsNewApplicationInstance = false
 
             let semaphore = DispatchSemaphore(value: 0)
-            var openSuccess = false
+            let openSuccess = BoolBox()
 
             NSWorkspace.shared.openApplication(at: bundleURL, configuration: config) { app, error in
-                openSuccess = (error == nil && app != nil)
+                openSuccess.set(error == nil && app != nil)
                 semaphore.signal()
             }
 
             _ = semaphore.wait(timeout: .now() + 0.1)
-            success = openSuccess
+            success = openSuccess.get()
         }
 
         // Last resort: AX focus
