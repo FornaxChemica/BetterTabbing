@@ -360,6 +360,51 @@ final class AppState: ObservableObject {
         }
     }
 
+    func refreshWorkspaceWindowsForSelectedApp(forceRefresh: Bool = true) {
+        guard presentationMode == .workspace,
+              workspaceMode == .currentAppWindows,
+              let selectedPID = selectedApp?.pid,
+              let appIndex = applications.firstIndex(where: { $0.pid == selectedPID }),
+              let freshApp = WindowCache.shared.getApplicationsForWorkspaceSwitching(forceRefresh: forceRefresh)
+                .first(where: { $0.pid == selectedPID }) else {
+            return
+        }
+
+        let existingWindows = applications[appIndex].windows
+        let mergedWindows = WindowModel.mergedPreservingPreviews(
+            fresh: freshApp.windows,
+            existing: existingWindows
+        )
+
+        let existingCarouselIDs = Set(existingWindows.map(\.carouselItemID))
+        let mergedCarouselIDs = Set(mergedWindows.map(\.carouselItemID))
+        guard existingCarouselIDs != mergedCarouselIDs else { return }
+
+        let previousWindow = existingWindows.indices.contains(selectedWindowIndex)
+            ? existingWindows[selectedWindowIndex]
+            : nil
+
+        var updatedApplications = applications
+        updatedApplications[appIndex].windows = mergedWindows
+        applications = updatedApplications
+
+        if let previousWindow,
+           let matchingIndex = mergedWindows.firstIndex(where: { window in
+               window.previewIdentity.matches(previousWindow.previewIdentity)
+           }) {
+            selectedWindowIndex = matchingIndex
+            return
+        }
+
+        if let firstRealIndex = mergedWindows.indices.first(where: { index in
+            !mergedWindows[index].isWindowlessPlaceholder
+        }) {
+            selectedWindowIndex = firstRealIndex
+        } else {
+            selectedWindowIndex = 0
+        }
+    }
+
     func pinWorkspaceSearch() {
         workspaceMode = .globalWindowSearch
         workspaceSearchScope = .allWindows
@@ -467,17 +512,30 @@ final class AppState: ObservableObject {
     }
 
     private func upsertNativeApplication(_ app: ApplicationModel) {
+        let app = WindowEnumerator.normalizeFinderApplicationIfNeeded(app)
+
         if let index = applications.firstIndex(where: { $0.pid == app.pid || $0.bundleIdentifier == app.bundleIdentifier }) {
             var mergedApplication = app
             for windowIndex in mergedApplication.windows.indices {
+                let window = mergedApplication.windows[windowIndex]
+                if window.isWindowlessPlaceholder
+                    || WindowEnumerator.shouldSuppressFinderPreview(for: window) {
+                    mergedApplication.windows[windowIndex].previewImage = nil
+                    continue
+                }
+
                 guard mergedApplication.windows[windowIndex].previewImage == nil else { continue }
 
                 let identity = mergedApplication.windows[windowIndex].previewIdentity
-                if let existingWindow = applications[index].windows.first(where: { $0.previewIdentity.matches(identity) }),
-                   let previewImage = existingWindow.previewImage {
+                if let existingWindow = applications[index].windows.first(where: {
+                    !$0.isWindowlessPlaceholder && $0.previewIdentity.matches(identity)
+                }),
+                   let previewImage = existingWindow.previewImage,
+                   !WindowEnumerator.shouldSuppressFinderPreview(for: existingWindow) {
                     mergedApplication.windows[windowIndex].previewImage = previewImage
                 }
             }
+            mergedApplication = WindowEnumerator.normalizeFinderApplicationIfNeeded(mergedApplication)
             applications[index] = mergedApplication
         } else {
             applications.append(app)
@@ -494,6 +552,7 @@ final class AppState: ObservableObject {
         for windowIndex in app.windows.indices {
             guard app.windows[windowIndex].previewImage == nil else { continue }
             guard !app.windows[windowIndex].isWindowlessPlaceholder else { continue }
+            guard !WindowEnumerator.shouldSuppressFinderPreview(for: app.windows[windowIndex]) else { continue }
 
             if let image = WindowPreviewService.shared.cachedPreview(for: app.windows[windowIndex].previewIdentity) {
                 app.windows[windowIndex].previewImage = image

@@ -291,7 +291,10 @@ final class SwitcherPanelManager {
 
     @discardableResult
     func selectNativeDockSelection(_ selection: DockProcessSwitcherSelection) -> Bool {
-        let resolvedApplication = AppState.shared.applications.first { app in
+        let resolvedApplication = WindowCache.shared.applicationMatchingForNativePreview(
+            pid: selection.pid,
+            bundleIdentifier: selection.bundleIdentifier
+        ) ?? AppState.shared.applications.first { app in
             if let pid = selection.pid, app.pid == pid {
                 return true
             }
@@ -299,10 +302,8 @@ final class SwitcherPanelManager {
                 return true
             }
             return false
-        } ?? WindowCache.shared.applicationMatchingForNativePreview(
-            pid: selection.pid,
-            bundleIdentifier: selection.bundleIdentifier
-        ) ?? nativePlaceholderApplication(for: selection)
+        }.map(WindowEnumerator.normalizeFinderApplicationIfNeeded)
+        ?? nativePlaceholderApplication(for: selection)
 
         let didSelect = AppState.shared.selectNativeApplication(
             pid: resolvedApplication.pid,

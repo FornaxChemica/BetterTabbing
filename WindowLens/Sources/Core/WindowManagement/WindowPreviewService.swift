@@ -178,6 +178,10 @@ final class WindowPreviewService: @unchecked Sendable {
 
         for window in windows {
             guard !window.isWindowlessPlaceholder else { continue }
+            if WindowEnumerator.shouldSuppressFinderPreview(for: window) {
+                log("skip Finder restore preview id=\(window.windowID) title=\(window.title)")
+                continue
+            }
 
             let windowID = window.windowID
             let identity = requestIdentity(for: window, ownerPID: ownerPID)

@@ -14,11 +14,18 @@ struct WindowListView: View {
     private var surfaceItems: [WindowSurfaceItem] {
         app.windows.enumerated().map { index, window in
             WindowSurfaceItem(
-                id: window.previewIdentity.surfaceID,
+                id: carouselItemID(for: window),
                 index: index,
                 window: window
             )
         }
+    }
+
+    private func carouselItemID(for window: WindowModel) -> String {
+        if presentationMode == .workspace && appState.workspaceMode == .currentAppWindows {
+            return window.carouselItemID
+        }
+        return window.previewIdentity.surfaceID
     }
 
     var body: some View {
@@ -30,11 +37,6 @@ struct WindowListView: View {
                     liquidGlassGroup {
                         HStack(alignment: .center, spacing: app.hasMultipleWindows ? 18 : 0) {
                             ForEach(surfaceItems) { item in
-                                let slotNumber = slotRegistry.assignedSlot(for: item.window.windowID)
-                                    .flatMap { slot in
-                                        slotRegistry.assignment(for: slot)?.isAlive == true ? slot : nil
-                                    }
-
                                 WindowPreviewSurfaceView(
                                     window: item.window,
                                     appName: app.name,
@@ -43,7 +45,6 @@ struct WindowListView: View {
                                     distanceFromSelection: abs(item.index - selectedWindowIndex),
                                     presentationMode: presentationMode,
                                     maximumPreviewWidth: maximumPreviewWidth,
-                                    slotNumber: slotNumber,
                                     onHover: { isHovering in
                                         if isHovering {
                                             onWindowHovered?(item.index)
@@ -75,7 +76,10 @@ struct WindowListView: View {
                                 .zIndex(item.index == selectedWindowIndex ? 10 : Double(5 - abs(item.index - selectedWindowIndex)))
                             }
                         }
-                        .frame(minWidth: geometry.size.width, alignment: app.hasMultipleWindows ? .leading : .center)
+                        .frame(
+                            minWidth: geometry.size.width,
+                            alignment: shouldCenterWindowCarousel ? .center : (app.hasMultipleWindows ? .leading : .center)
+                        )
                         .padding(.horizontal, app.hasMultipleWindows ? 22 : 0)
                         .padding(.vertical, 18)
                     }
@@ -103,7 +107,8 @@ struct WindowListView: View {
         .onChange(of: app.id) { oldValue, newValue in
             requestMissingPreviews()
         }
-        .onChange(of: app.windows.map(\.previewIdentity)) { oldValue, newValue in
+        .onChange(of: app.windows.map(\.carouselItemID)) { oldValue, newValue in
+            guard oldValue != newValue else { return }
             requestMissingPreviews()
         }
         .onChange(of: app.windows.map(\.title)) { oldValue, newValue in
@@ -137,6 +142,10 @@ struct WindowListView: View {
 
     private var usesAdaptiveWindowCarousel: Bool {
         isNativePreviewCarousel || isCurrentAppWorkspaceCarousel
+    }
+
+    private var shouldCenterWindowCarousel: Bool {
+        usesAdaptiveWindowCarousel && surfaceItems.count <= 3
     }
 
     private var usesPeekMask: Bool {
@@ -215,8 +224,16 @@ struct WindowListView: View {
     }
 
     private func requestMissingPreviews() {
+        let windowsNeedingPreview = app.windows.filter { window in
+            !window.isWindowlessPlaceholder
+                && !WindowEnumerator.shouldSuppressFinderPreview(for: window)
+                && window.previewImage == nil
+                && window.canCapturePreview
+        }
+        guard !windowsNeedingPreview.isEmpty else { return }
+
         WindowPreviewService.shared.requestPreviews(
-            for: app.windows,
+            for: windowsNeedingPreview,
             ownerPID: app.pid,
             appName: app.name,
             selectionGeneration: appState.previewRequestGeneration(for: presentationMode)
@@ -238,10 +255,10 @@ private struct WindowPreviewSurfaceView: View {
     let distanceFromSelection: Int
     let presentationMode: SwitcherPresentationMode
     let maximumPreviewWidth: CGFloat?
-    var slotNumber: Int? = nil
     var onHover: ((Bool) -> Void)? = nil
 
     @State private var isHovered = false
+    @State private var retainedPreview: NSImage?
 
     private var geometry: AdaptivePreviewGeometry {
         AdaptivePreviewGeometry(
@@ -251,9 +268,18 @@ private struct WindowPreviewSurfaceView: View {
         )
     }
 
+    private var shouldUseWindowlessPreviewSurface: Bool {
+        window.isWindowlessPlaceholder
+            || WindowEnumerator.shouldSuppressFinderPreview(for: window)
+    }
+
+    private var previewContentAlignment: Alignment {
+        shouldUseWindowlessPreviewSurface ? .center : .bottomLeading
+    }
+
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            if window.isWindowlessPlaceholder {
+        ZStack(alignment: previewContentAlignment) {
+            if shouldUseWindowlessPreviewSurface {
                 WindowlessPreviewSurface(
                     appName: appName,
                     appIcon: appIcon,
@@ -262,7 +288,7 @@ private struct WindowPreviewSurfaceView: View {
                 .frame(width: geometry.visualSize.width, height: geometry.visualSize.height)
             } else {
                 ZStack {
-                    if let previewImage = window.previewImage {
+                    if let previewImage = displayedPreviewImage {
                         ZStack(alignment: .topTrailing) {
                             Image(nsImage: previewImage)
                                 .resizable()
@@ -270,7 +296,6 @@ private struct WindowPreviewSurfaceView: View {
                                 .aspectRatio(contentMode: .fit)
                                 .frame(width: geometry.visualSize.width, height: geometry.visualSize.height)
                                 .clipped()
-                                .transition(.opacity.animation(.easeOut(duration: 0.16)))
 
                             if window.isMinimized {
                                 statusPill("Minimized")
@@ -303,15 +328,8 @@ private struct WindowPreviewSurfaceView: View {
                     .padding(.bottom, geometry.metadataInset)
                     .zIndex(50)
             }
-
-            if let slotNumber {
-                WindowSlotBadge(label: "\(slotNumber)")
-                    .padding(10)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                    .zIndex(60)
-            }
         }
-        .frame(width: geometry.visualSize.width, height: geometry.visualSize.height, alignment: .bottomLeading)
+        .frame(width: geometry.visualSize.width, height: geometry.visualSize.height, alignment: previewContentAlignment)
         .padding(.horizontal, 14)
         .padding(.vertical, 14)
         .offset(y: isSelected ? -6 : (isHovered ? -2 : 8))
@@ -319,14 +337,41 @@ private struct WindowPreviewSurfaceView: View {
         .opacity(cardOpacity)
         .animation(.spring(response: 0.24, dampingFraction: 0.84), value: isSelected)
         .animation(.easeOut(duration: 0.12), value: isHovered)
-        .animation(.easeOut(duration: 0.16), value: window.previewImage != nil)
         .contentShape(RoundedRectangle(cornerRadius: geometry.cornerRadius, style: .continuous))
+        .onAppear {
+            guard !shouldUseWindowlessPreviewSurface else {
+                retainedPreview = nil
+                return
+            }
+
+            if let previewImage = window.previewImage {
+                syncRetainedPreview(from: previewImage)
+            } else if let cachedPreview = WindowPreviewService.shared.cachedPreview(for: window.previewIdentity) {
+                syncRetainedPreview(from: cachedPreview)
+            }
+        }
+        .onChange(of: window.id) { _, _ in
+            retainedPreview = nil
+        }
+        .onChange(of: window.previewImage) { _, newValue in
+            syncRetainedPreview(from: newValue)
+        }
         .onHover { hovering in
             isHovered = hovering
             if hovering {
                 onHover?(true)
             }
         }
+    }
+
+    private var displayedPreviewImage: NSImage? {
+        guard !shouldUseWindowlessPreviewSurface else { return nil }
+        return window.previewImage ?? retainedPreview
+    }
+
+    private func syncRetainedPreview(from image: NSImage?) {
+        guard let image else { return }
+        retainedPreview = image
     }
 
     private var metadataPill: some View {
@@ -628,16 +673,18 @@ private struct WindowlessPreviewSurface: View {
                     Text(appName)
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.primary.opacity(0.82))
+                        .multilineTextAlignment(.center)
                         .lineLimit(1)
                         .truncationMode(.tail)
 
                     Text("No Windows")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                 }
-                .frame(maxWidth: max(72, geometry.visualSize.width - 44))
+                .frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         }
     }
 }

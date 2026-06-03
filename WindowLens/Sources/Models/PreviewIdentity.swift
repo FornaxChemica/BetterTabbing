@@ -76,6 +76,14 @@ struct PreviewIdentity: Hashable, Sendable {
             return true
         }
 
+        if hasReliableCGWindowID,
+           other.hasReliableCGWindowID,
+           cgWindowID != 0,
+           other.cgWindowID != 0,
+           cgWindowID != other.cgWindowID {
+            return false
+        }
+
         return !Set(cacheKeys).isDisjoint(with: other.cacheKeys)
     }
 

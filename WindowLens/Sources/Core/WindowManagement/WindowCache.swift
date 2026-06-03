@@ -62,18 +62,36 @@ final class WindowCache: @unchecked Sendable {
             options: enumerationOptions(includeAllSpacesOverride: true)
         )
         attachResourceUsage(to: &applications)
+        applications = applications.map(WindowEnumerator.normalizeFinderApplicationIfNeeded)
 
         return mergeApplications(applications, preservingOrder: existingOrder)
     }
 
-    func getApplicationsForWorkspaceSwitching() -> [ApplicationModel] {
+    func getApplicationsForWorkspaceSwitching(forceRefresh: Bool = false) -> [ApplicationModel] {
         let existingOrder = getCachedApplications().map { $0.pid }
-        var applications = enumerateApplications(
-            options: enumerationOptions(includeAllSpacesOverride: true)
-        )
+
+        if !forceRefresh && !existingOrder.isEmpty {
+            let cached = getCachedApplications()
+            if !containsStaleFinderPlaceholder(in: cached) {
+                return cached
+            }
+        }
+
+        var applications = enumerateApplications(options: enumerationOptions())
         attachResourceUsage(to: &applications)
 
         return mergeApplications(applications, preservingOrder: existingOrder)
+    }
+
+    private func containsStaleFinderPlaceholder(in applications: [ApplicationModel]) -> Bool {
+        guard let finder = applications.first(where: { $0.bundleIdentifier == WindowEnumerator.finderBundleIdentifier }) else {
+            return false
+        }
+
+        let hasRealWindows = finder.windows.contains { !$0.isWindowlessPlaceholder }
+        guard !hasRealWindows else { return false }
+
+        return WindowEnumerator.finderHasMainWindow(pid: finder.pid)
     }
 
     private func enumerateApplications(options: WindowEnumerator.EnumerationOptions) -> [ApplicationModel] {
@@ -98,11 +116,15 @@ final class WindowCache: @unchecked Sendable {
         pid: pid_t?,
         bundleIdentifier: String?
     ) -> ApplicationModel? {
-        applicationMatching(
+        guard let app = applicationMatching(
             pid: pid,
             bundleIdentifier: bundleIdentifier,
             in: getApplicationsForNativePreview()
-        )
+        ) else {
+            return nil
+        }
+
+        return WindowEnumerator.normalizeFinderApplicationIfNeeded(app)
     }
 
     func applicationMatching(
@@ -207,9 +229,15 @@ final class WindowCache: @unchecked Sendable {
     }
 
     /// Prefetch on background thread - non-blocking
-    func prefetchAsync() {
+    func prefetchAsync(onComplete: (@MainActor () -> Void)? = nil) {
         DispatchQueue.global(qos: .userInteractive).async { [weak self] in
             self?.prefetch()
+            guard let onComplete else { return }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    onComplete()
+                }
+            }
         }
     }
 

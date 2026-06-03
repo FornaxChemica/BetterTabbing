@@ -230,10 +230,374 @@ final class WindowLensTests: XCTestCase {
         XCTAssertNil(preferences.matchesWindowSlotDigit(keyCode: UInt16(kVK_ANSI_3), flags: flags))
     }
 
+    func testMergedWindowsPreservingPreviewsKeepsExistingImage() {
+        let pid: pid_t = 10_001
+        let windowID = CGWindowID(42)
+        let image = NSImage(size: NSSize(width: 12, height: 12))
+
+        let existing = WindowModel(
+            windowID: windowID,
+            title: "Welcome",
+            ownerPID: pid,
+            previewImage: image
+        )
+        let fresh = WindowModel(
+            windowID: windowID,
+            title: "Welcome",
+            ownerPID: pid,
+            previewImage: nil
+        )
+
+        let merged = WindowModel.mergedPreservingPreviews(fresh: [fresh], existing: [existing])
+
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertTrue(merged[0].previewImage === image)
+    }
+
+    func testMergedWindowsPreservingPreviewsMatchesByTitleWhenWindowIDChanges() {
+        let pid: pid_t = 10_003
+        let image = NSImage(size: NSSize(width: 12, height: 12))
+        let existing = WindowModel(
+            windowID: PreviewIdentity.pseudoWindowID(ownerPID: pid, axIndex: 0, title: "Welcome", bounds: .zero),
+            title: "Welcome",
+            ownerPID: pid,
+            axIndex: 0,
+            hasReliableWindowID: false,
+            previewImage: image
+        )
+        let fresh = WindowModel(
+            windowID: 9_001,
+            title: "Welcome",
+            ownerPID: pid,
+            axIndex: 0,
+            previewImage: nil
+        )
+
+        let merged = WindowModel.mergedPreservingPreviews(fresh: [fresh], existing: [existing])
+
+        XCTAssertTrue(merged[0].previewImage === image)
+        XCTAssertEqual(merged[0].carouselItemID, existing.carouselItemID)
+    }
+
+    // MARK: - Finder Window Enumeration
+
+    func testFinderRefinementDropsGenericShellWhenBrowserWindowExists() {
+        let windows = [
+            makeFinderWindowInfo(title: "Desktop — Local", windowID: 100, axIndex: 0),
+            makeFinderWindowInfo(title: "Finder", windowID: 200, axIndex: 1)
+        ]
+
+        let refined = refineFinderWindows(
+            windows,
+            visibleCGWindowIDs: [100, 200],
+            cgWindowNamesByID: [100: "Desktop — Local", 200: "Finder"]
+        )
+
+        XCTAssertEqual(refined.count, 1)
+        XCTAssertEqual(refined[0].windowName, "Desktop — Local")
+    }
+
+    func testFinderRefinementReplacesLoneRestoreShellWithNoWindowsPlaceholder() {
+        let windows = [makeFinderWindowInfo(title: "Finder", windowID: 100)]
+
+        let refined = refineFinderWindows(windows, visibleCGWindowIDs: [])
+
+        XCTAssertEqual(refined.count, 1)
+        XCTAssertEqual(refined[0].windowName, "No Windows")
+        XCTAssertFalse(refined[0].hasReliableWindowID)
+        XCTAssertEqual(refined[0].bounds, .zero)
+        XCTAssertFalse(refined[0].isOnScreen)
+    }
+
+    func testFinderRefinementReplacesSingleOffScreenBrowserWithNoWindowsPlaceholder() {
+        let windows = [
+            makeFinderWindowInfo(
+                title: "Desktop — Local",
+                windowID: 100,
+                bounds: CGRect(x: -12_000, y: 200, width: 900, height: 700),
+                isOnScreen: true
+            )
+        ]
+
+        let refined = refineFinderWindows(windows, visibleCGWindowIDs: [100])
+
+        XCTAssertEqual(refined.count, 1)
+        XCTAssertEqual(refined[0].windowName, "No Windows")
+    }
+
+    func testFinderRefinementReplacesSingleHiddenBrowserWithNoWindowsPlaceholder() {
+        let windows = [
+            makeFinderWindowInfo(title: "Desktop — Local", windowID: 100, isHidden: true)
+        ]
+
+        let refined = refineFinderWindows(windows, visibleCGWindowIDs: [100])
+
+        XCTAssertEqual(refined.count, 1)
+        XCTAssertEqual(refined[0].windowName, "No Windows")
+    }
+
+    func testFinderRefinementKeepsVisibleSingleBrowserWindow() {
+        let windows = [makeFinderWindowInfo(title: "Desktop — Local", windowID: 100)]
+
+        let refined = refineFinderWindows(
+            windows,
+            visibleCGWindowIDs: [100],
+            cgWindowNamesByID: [100: "Desktop — Local"]
+        )
+
+        XCTAssertEqual(refined.count, 1)
+        XCTAssertEqual(refined[0].windowName, "Desktop — Local")
+    }
+
+    func testFinderRefinementReplacesBrowserWhenCGTitleDoesNotMatchAX() {
+        let windows = [makeFinderWindowInfo(title: "Desktop — Local", windowID: 100, isMain: false)]
+
+        let refined = refineFinderWindows(
+            windows,
+            visibleCGWindowIDs: [100],
+            cgWindowNamesByID: [100: "Finder"]
+        )
+
+        XCTAssertEqual(refined.count, 1)
+        XCTAssertEqual(refined[0].windowName, "No Windows")
+    }
+
+    func testFinderRefinementReplacesBrowserWhenCGTitleIsMissing() {
+        let windows = [makeFinderWindowInfo(title: "Desktop — Local", windowID: 100)]
+
+        let refined = refineFinderWindows(
+            windows,
+            visibleCGWindowIDs: [100],
+            cgWindowNamesByID: [100: ""]
+        )
+
+        XCTAssertEqual(refined.count, 1)
+        XCTAssertEqual(refined[0].windowName, "No Windows")
+    }
+
+    func testFinderRefinementReplacesSingleOffSpaceBrowserWithNoWindowsPlaceholder() {
+        let windows = [
+            makeFinderWindowInfo(title: "Desktop — Local", windowID: 100, isOnScreen: false)
+        ]
+
+        let refined = refineFinderWindows(windows, visibleCGWindowIDs: [100])
+
+        XCTAssertEqual(refined.count, 1)
+        XCTAssertEqual(refined[0].windowName, "No Windows")
+    }
+
+    func testFinderRefinementReplacesRestoreRowWithoutMainWindow() {
+        let windows = [
+            makeFinderWindowInfo(title: "Desktop — Local", windowID: 100, isMain: false)
+        ]
+
+        let refined = refineFinderWindows(
+            windows,
+            visibleCGWindowIDs: [100],
+            cgWindowNamesByID: [100: "Desktop — Local"]
+        )
+
+        XCTAssertEqual(refined.count, 1)
+        XCTAssertEqual(refined[0].windowName, "No Windows")
+    }
+
+    func testFinderRefinementKeepsBrowserWithMainWindow() {
+        let windows = [
+            makeFinderWindowInfo(title: "Desktop — Local", windowID: 100, isMain: true)
+        ]
+
+        let refined = refineFinderWindows(
+            windows,
+            visibleCGWindowIDs: [100],
+            cgWindowNamesByID: [100: "Desktop — Local"]
+        )
+
+        XCTAssertEqual(refined.count, 1)
+        XCTAssertEqual(refined[0].windowName, "Desktop — Local")
+    }
+
+    func testFinderRefinementReplacesMainBrowserWithoutMatchingCGTitle() {
+        let windows = [makeFinderWindowInfo(title: "Recents", windowID: 100, isMain: true)]
+
+        let refined = refineFinderWindows(
+            windows,
+            visibleCGWindowIDs: [100],
+            cgWindowNamesByID: [100: "Finder"]
+        )
+
+        XCTAssertEqual(refined.map(\.windowName), ["Recents"])
+    }
+
+    func testFinderRefinementKeepsTwoRecentsWindowsWithGenericCGTitle() {
+        let windows = [
+            makeFinderWindowInfo(
+                title: "Recents",
+                windowID: 100,
+                bounds: CGRect(x: 40, y: 40, width: 900, height: 700),
+                axIndex: 0,
+                isMain: false
+            ),
+            makeFinderWindowInfo(
+                title: "Recents",
+                windowID: 200,
+                bounds: CGRect(x: 980, y: 40, width: 900, height: 700),
+                axIndex: 1,
+                isMain: false
+            )
+        ]
+
+        let refined = refineFinderWindows(
+            windows,
+            visibleCGWindowIDs: [100, 200],
+            cgWindowNamesByID: [100: "Finder", 200: "Finder"]
+        )
+
+        XCTAssertEqual(refined.count, 2)
+        XCTAssertEqual(Set(refined.map(\.windowID)), Set([100, 200]))
+    }
+
+    func testFinderRefinementKeepsMultipleBrowserWindows() {
+        let windows = [
+            makeFinderWindowInfo(title: "Downloads", windowID: 100, axIndex: 0, isMain: true),
+            makeFinderWindowInfo(title: "Documents", windowID: 200, axIndex: 1, isMain: false)
+        ]
+
+        let refined = refineFinderWindows(windows, visibleCGWindowIDs: [100, 200])
+
+        XCTAssertEqual(refined.map(\.windowName), ["Downloads", "Documents"])
+    }
+
+    func testFinderRefinementKeepsMultipleBrowserWindowsWhenNeitherIsMain() {
+        let windows = [
+            makeFinderWindowInfo(title: "Downloads", windowID: 100, axIndex: 0, isMain: false),
+            makeFinderWindowInfo(title: "Documents", windowID: 200, axIndex: 1, isMain: false)
+        ]
+
+        let refined = refineFinderWindows(windows, visibleCGWindowIDs: [100, 200])
+
+        XCTAssertEqual(refined.map(\.windowName), ["Downloads", "Documents"])
+    }
+
+    func testFinderRefinementLeavesNonFinderAppsUntouched() {
+        let windows = [
+            makeFinderWindowInfo(title: "Finder", windowID: 100),
+            makeFinderWindowInfo(title: "Desktop — Local", windowID: 200)
+        ]
+
+        let refined = WindowEnumerator.refinedWindowsForApplication(
+            windows,
+            bundleIdentifier: "com.microsoft.VSCode"
+        )
+
+        XCTAssertEqual(refined.count, 2)
+    }
+
+    func testFinderRefinementCollapsesRowsSharingCaptureID() {
+        let sharedBounds = CGRect(x: 40, y: 40, width: 900, height: 700)
+        let windows = [
+            makeFinderWindowInfo(title: "Desktop — Local", windowID: 555, bounds: sharedBounds, axIndex: 0),
+            makeFinderWindowInfo(title: "Finder", windowID: 555, bounds: sharedBounds, axIndex: 1)
+        ]
+
+        let refined = refineFinderWindows(
+            windows,
+            visibleCGWindowIDs: [555],
+            cgWindowNamesByID: [555: "Desktop — Local"]
+        )
+
+        XCTAssertEqual(refined.count, 1)
+        XCTAssertEqual(refined[0].windowName, "Desktop — Local")
+        XCTAssertEqual(refined[0].windowID, 555)
+    }
+
+    func testFinderRefinementDropsOverlappingUntitledShell() {
+        let browserBounds = CGRect(x: 40, y: 40, width: 900, height: 700)
+        let windows = [
+            makeFinderWindowInfo(title: "Desktop — Local", windowID: 100, bounds: browserBounds, axIndex: 0),
+            makeFinderWindowInfo(title: nil, windowID: 200, bounds: browserBounds, axIndex: 1)
+        ]
+
+        let refined = refineFinderWindows(
+            windows,
+            visibleCGWindowIDs: [100, 200],
+            cgWindowNamesByID: [100: "Desktop — Local"]
+        )
+
+        XCTAssertEqual(refined.count, 1)
+        XCTAssertEqual(refined[0].windowName, "Desktop — Local")
+    }
+
+    func testFinderPlaceholderMapsToWindowlessPreviewModel() {
+        let placeholder = WindowEnumerator.finderWindowlessPlaceholder(
+            from: makeFinderWindowInfo(title: "Desktop — Local", windowID: 100)
+        )
+        let model = WindowModel(from: placeholder)
+        XCTAssertTrue(model.isWindowlessPlaceholder)
+    }
+
+    func testMergedWindowsPreservingPreviewsDropsRemovedSurface() {
+        let pid: pid_t = 10_002
+        let existing = WindowModel(windowID: 1, title: "One", ownerPID: pid)
+        let fresh = WindowModel(windowID: 2, title: "Two", ownerPID: pid)
+
+        let merged = WindowModel.mergedPreservingPreviews(fresh: [fresh], existing: [existing])
+
+        XCTAssertEqual(merged.map(\.title), ["Two"])
+    }
+
     // MARK: - Helpers
 
     private func makeApp(name: String) -> ApplicationModel {
         makeApp(pid: pid_t.random(in: 1...10000), name: name)
+    }
+
+    private func refineFinderWindows(
+        _ windows: [WindowInfo],
+        visibleCGWindowIDs: Set<CGWindowID>? = nil,
+        cgWindowNamesByID: [CGWindowID: String]? = nil
+    ) -> [WindowInfo] {
+        let visible = visibleCGWindowIDs ?? Set(windows.map(\.windowID))
+        let cgNames = cgWindowNamesByID ?? {
+            var names: [CGWindowID: String] = [:]
+            for window in windows {
+                names[window.windowID] = window.windowName ?? ""
+            }
+            return names
+        }()
+        return WindowEnumerator.refinedWindowsForApplication(
+            windows,
+            bundleIdentifier: WindowEnumerator.finderBundleIdentifier,
+            visibleCGWindowIDsForOwner: visible,
+            cgWindowNamesByID: cgNames
+        )
+    }
+
+    private func makeFinderWindowInfo(
+        title: String?,
+        windowID: CGWindowID = 100,
+        bounds: CGRect = CGRect(x: 40, y: 40, width: 900, height: 700),
+        hasReliableWindowID: Bool = true,
+        axIndex: Int = 0,
+        isOnScreen: Bool = true,
+        isHidden: Bool = false,
+        isMain: Bool = true,
+        isMinimized: Bool = false
+    ) -> WindowInfo {
+        WindowInfo(
+            windowID: windowID,
+            ownerPID: 501,
+            ownerBundleIdentifier: WindowEnumerator.finderBundleIdentifier,
+            axIndex: axIndex,
+            ownerName: "Finder",
+            windowName: title,
+            bounds: bounds,
+            isOnScreen: isOnScreen,
+            isMinimized: isMinimized,
+            isHidden: isHidden,
+            isMain: isMain,
+            spaceID: nil,
+            hasReliableWindowID: hasReliableWindowID
+        )
     }
 
     private func makeApp(pid: pid_t, name: String) -> ApplicationModel {

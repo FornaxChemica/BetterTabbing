@@ -3,7 +3,6 @@ import SwiftUI
 
 struct SwitcherView: View {
     @EnvironmentObject var appState: AppState
-    @ObservedObject private var slotRegistry = WindowNumberRegistry.shared
     @FocusState private var isSearchFocused: Bool
 
     /// Whether to show search results list (when searching with query)
@@ -61,12 +60,10 @@ struct SwitcherView: View {
     }
 
     private var currentAppWindowOverlay: some View {
-        VStack(spacing: 12) {
-            HStack {
-                Spacer(minLength: 0)
-                appRail
-                Spacer(minLength: 0)
-            }
+        let contentWidth = currentAppOverlayContentWidth
+
+        return VStack(spacing: 12) {
+            workspaceAppSwitcherHeader
 
             if let selectedApp = appState.selectedApp {
                 WindowListView(
@@ -89,7 +86,19 @@ struct SwitcherView: View {
                 }
             }
         }
+        .frame(width: contentWidth)
+        .frame(maxWidth: .infinity)
         .padding(.vertical, 10)
+    }
+
+    private var currentAppOverlayContentWidth: CGFloat {
+        let windowCount = appState.selectedApp.map(realWindowCount(for:)) ?? 1
+        return nativePreviewWidth(for: max(windowCount, 1))
+    }
+
+    private func realWindowCount(for app: ApplicationModel) -> Int {
+        let realWindows = app.windows.filter { !$0.isWindowlessPlaceholder }.count
+        return realWindows > 0 ? realWindows : app.windows.count
     }
 
     private var globalWindowSearchOverlay: some View {
@@ -227,58 +236,55 @@ struct SwitcherView: View {
         .opacity(0.84)
     }
 
-    private var appRail: some View {
+    @ViewBuilder
+    private var workspaceAppSwitcherHeader: some View {
+        if let selectedApp = appState.selectedApp {
+            VStack(spacing: 8) {
+                CurrentAppHeader(app: selectedApp)
+
+                if appState.filteredApplications.count > 1 {
+                    workspaceAppSwitcherRail
+                }
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    private var workspaceAppSwitcherRail: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 9) {
+            HStack(spacing: 8) {
                 ForEach(Array(appState.filteredApplications.enumerated()), id: \.element.id) { index, app in
                     let isSelected = index == appState.selectedAppIndex
-                    let slotNumbers = slotRegistry.slotNumbers(for: app.pid)
 
                     AppRailToken(
                         app: app,
                         isSelected: isSelected,
                         isQuitHoldActive: appState.isQuitHoldActive && index == appState.quitTargetAppIndex,
-                        quitHoldProgress: isSelected ? appState.quitHoldProgress : 0,
-                        windowSlotNumbers: slotNumbers
+                        quitHoldProgress: isSelected ? appState.quitHoldProgress : 0
                     )
                     .onTapGesture {
                         appState.selectedAppIndex = index
                         appState.selectedWindowIndex = 0
+                        appState.refreshWorkspaceWindowsForSelectedApp()
                         confirmSelection()
                     }
                     .onHover { hovering in
                         guard hovering, appState.shouldProcessMouseInput else { return }
                         appState.selectedAppIndex = index
                         appState.selectedWindowIndex = 0
+                        appState.refreshWorkspaceWindowsForSelectedApp()
                     }
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(
-                GlassBackground(
-                    cornerRadius: 18,
-                    tintOpacity: 0.035,
-                    strokeOpacity: 0.06,
-                    shadowOpacity: 0.06,
-                    shadowRadius: 12,
-                    shadowYOffset: 6
-                )
-            )
+            .padding(.horizontal, 2)
         }
-        .frame(width: appRailWidth())
+        .fixedSize(horizontal: true, vertical: true)
+        .frame(maxWidth: .infinity)
         .onContinuousHover { phase in
             if case .active = phase {
                 appState.markMouseNavigation(at: NSEvent.mouseLocation)
             }
         }
-    }
-
-    private func appRailWidth() -> CGFloat {
-        let appCount = max(appState.filteredApplications.count, 1)
-        let estimatedChipWidth = CGFloat(min(appCount, 10)) * 52
-
-        return min(max(estimatedChipWidth + 28, 160), 760)
     }
 
     /// Calculate optimal width based on number of apps
@@ -294,10 +300,7 @@ struct SwitcherView: View {
         }
 
         if appState.workspaceMode == .currentAppWindows {
-            let windowCount = appState.selectedApp?.windows.count ?? 1
-            let appCount = appState.filteredApplications.count
-            let railWidth = CGFloat(min(appCount, 10)) * 58 + 120
-            return max(nativePreviewWidth(for: windowCount), min(max(railWidth, 780), 1040))
+            return nativePreviewWidth(for: appState.selectedApp?.windows.count ?? 1)
         }
 
         if showSearchResults {
@@ -425,52 +428,36 @@ private struct AppRailToken: View {
     let isSelected: Bool
     let isQuitHoldActive: Bool
     let quitHoldProgress: CGFloat
-    let windowSlotNumbers: [Int]
 
     var body: some View {
-        HStack(spacing: isSelected ? 8 : 0) {
-            ZStack {
-                Image(nsImage: app.icon)
-                    .resizable()
-                    .interpolation(.high)
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 30, height: 30)
-                    .shadow(color: .black.opacity(0.16), radius: 2, x: 0, y: 1)
-                    .opacity(isQuitHoldActive ? 0.55 : 1)
+        ZStack {
+            Image(nsImage: app.icon)
+                .resizable()
+                .interpolation(.high)
+                .aspectRatio(contentMode: .fit)
+                .frame(width: isSelected ? 28 : 24, height: isSelected ? 28 : 24)
+                .shadow(color: .black.opacity(0.16), radius: 2, x: 0, y: 1)
+                .opacity(isQuitHoldActive ? 0.55 : 1)
 
-                if isQuitHoldActive {
-                    CircularProgressRing(
-                        progress: quitHoldProgress,
-                        color: .red,
-                        lineWidth: 2,
-                        size: 40
-                    )
-                }
-
-                if let badgeLabel = WindowSlotBadge.railLabel(for: windowSlotNumbers) {
-                    WindowSlotBadge(label: badgeLabel)
-                        .offset(x: 12, y: -12)
-                }
-            }
-
-            if isSelected {
-                Text(app.name)
-                    .font(.system(size: 11, weight: .medium))
-                    .lineLimit(1)
-                    .transition(.opacity.combined(with: .move(edge: .leading)))
+            if isQuitHoldActive {
+                CircularProgressRing(
+                    progress: quitHoldProgress,
+                    color: .red,
+                    lineWidth: 2,
+                    size: 36
+                )
             }
         }
-        .padding(.horizontal, isSelected ? 10 : 7)
-        .padding(.vertical, 7)
+        .padding(6)
         .background(
-            Capsule()
-                .fill(Color.white.opacity(isSelected ? 0.09 : 0.015))
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(isSelected ? 0.10 : 0.03))
                 .overlay(
-                    Capsule()
-                        .strokeBorder(Color.white.opacity(isSelected ? 0.10 : 0.03), lineWidth: 0.5)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(Color.white.opacity(isSelected ? 0.14 : 0.05), lineWidth: 0.5)
                 )
         )
-        .contentShape(Capsule())
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .animation(.easeInOut(duration: 0.16), value: isSelected)
     }
 }

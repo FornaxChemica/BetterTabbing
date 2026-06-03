@@ -603,7 +603,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         switch event {
         case .activationStarted:
-            break
+            WindowCache.shared.prefetchAsync()
         case .showSwitcher:
             startWorkspaceWindowSession(showImmediately: true)
             eventTap?.setSwitcherVisible(true)
@@ -715,7 +715,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func startWorkspaceWindowSession(showImmediately: Bool) {
-        var snapshot = WindowCache.shared.getApplicationsForWorkspaceSwitching()
+        var snapshot = hydratingWorkspaceSnapshot(
+            WindowCache.shared.getApplicationsForWorkspaceSwitching()
+        )
         let frontmost = frontmostApplicationForWorkspace()
         if let frontmost,
            !snapshot.contains(where: { $0.pid == frontmost.processIdentifier || $0.bundleIdentifier == frontmost.bundleIdentifier }) {
@@ -740,10 +742,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             requestSelectedNativeAppPreviews(selectedApp)
         }
 
-        WindowCache.shared.prefetchAsync()
+        WindowCache.shared.prefetchAsync {
+            guard AppState.shared.isVisible,
+                  AppState.shared.presentationMode == .workspace else {
+                return
+            }
+            AppState.shared.refreshWorkspaceWindowsForSelectedApp(forceRefresh: false)
+        }
 
         guard showImmediately else { return }
         panelManager.showCurrentAppWindowSwitcher()
+    }
+
+    private func hydratingWorkspaceSnapshot(_ snapshot: [ApplicationModel]) -> [ApplicationModel] {
+        snapshot.map { app in
+            var hydratedApp = app
+            hydratedApp.windows = WindowModel.mergedPreservingPreviews(
+                fresh: hydratedApp.windows,
+                existing: hydratedApp.windows
+            )
+            return hydratedApp
+        }
     }
 
     private func pinWorkspaceSearch() {

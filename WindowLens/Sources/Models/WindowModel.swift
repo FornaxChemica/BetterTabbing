@@ -85,6 +85,18 @@ struct WindowModel: Identifiable, Hashable {
             && (subtitle == "No Windows" || PreviewIdentity.normalizedTitle(title) == "no windows")
     }
 
+    /// Stable identity for switcher carousel rows across re-enumeration (CGWindowID can resolve after first pass).
+    var carouselItemID: String {
+        let normalizedTitle = PreviewIdentity.normalizedTitle(title)
+        if let ownerPID = previewIdentity.ownerPID, let axIndex = previewIdentity.axIndex {
+            return "carousel:\(ownerPID):\(axIndex):\(normalizedTitle)"
+        }
+        if let ownerPID = previewIdentity.ownerPID, !normalizedTitle.isEmpty {
+            return "carousel:\(ownerPID):\(normalizedTitle)"
+        }
+        return previewIdentity.surfaceID
+    }
+
     func compositorIdentity(ownerPID: pid_t) -> String {
         previewIdentity.withOwner(pid: ownerPID, bundleIdentifier: nil).surfaceID
     }
@@ -95,6 +107,45 @@ struct WindowModel: Identifiable, Hashable {
 
     static func == (lhs: WindowModel, rhs: WindowModel) -> Bool {
         lhs.id == rhs.id
+    }
+
+    /// Replaces the window list with a fresh enumeration while keeping thumbnails already shown in the switcher.
+    static func mergedPreservingPreviews(
+        fresh: [WindowModel],
+        existing: [WindowModel]
+    ) -> [WindowModel] {
+        fresh.map { window in
+            var merged = window
+
+            if merged.isWindowlessPlaceholder {
+                merged.previewImage = nil
+                return merged
+            }
+
+            if merged.previewImage == nil,
+               let existingWindow = existing.first(where: { merged.previewIdentity.matches($0.previewIdentity) }),
+               let previewImage = existingWindow.previewImage {
+                merged.previewImage = previewImage
+            }
+
+            if merged.previewImage == nil,
+               let ownerPID = merged.previewIdentity.ownerPID {
+                let normalizedTitle = PreviewIdentity.normalizedTitle(merged.title)
+                if let existingWindow = existing.first(where: { window in
+                    window.previewIdentity.ownerPID == ownerPID
+                        && PreviewIdentity.normalizedTitle(window.title) == normalizedTitle
+                }), let previewImage = existingWindow.previewImage {
+                    merged.previewImage = previewImage
+                }
+            }
+
+            if merged.previewImage == nil,
+               let cachedPreview = WindowPreviewService.shared.cachedPreview(for: merged.previewIdentity) {
+                merged.previewImage = cachedPreview
+            }
+
+            return merged
+        }
     }
 }
 
@@ -108,6 +159,8 @@ struct WindowInfo {
     let bounds: CGRect
     let isOnScreen: Bool
     let isMinimized: Bool
+    let isHidden: Bool
+    let isMain: Bool
     let spaceID: Int?
     let hasReliableWindowID: Bool
 }

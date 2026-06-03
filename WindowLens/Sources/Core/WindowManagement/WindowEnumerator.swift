@@ -108,15 +108,22 @@ final class WindowEnumerator {
                 AXUIElementCopyAttributeValue(axWindow, kAXMinimizedAttribute as CFString, &minimizedRef)
                 let isMinimized = (minimizedRef as? Bool) ?? false
 
+                var hiddenRef: CFTypeRef?
+                AXUIElementCopyAttributeValue(axWindow, kAXHiddenAttribute as CFString, &hiddenRef)
+                let isHidden = (hiddenRef as? Bool) ?? false
+
+                var mainRef: CFTypeRef?
+                AXUIElementCopyAttributeValue(axWindow, kAXMainAttribute as CFString, &mainRef)
+                let isMain = (mainRef as? Bool) ?? false
+
                 if isMinimized && !options.includeMinimized {
                     rejectedWindows.append("#\(axIndex) minimized hidden title=\(title ?? "untitled")")
                     continue
                 }
 
-                // Skip tiny live windows only for current-Space workspace views. All-Spaces
-                // enumeration can receive temporarily collapsed off-Space geometry.
+                // Reject collapsed AX geometry. Off-Space enumeration can report 0x0 or tiny
+                // transient surfaces that duplicate a real on-screen window for a few seconds.
                 if !isMinimized,
-                   !options.includeAllSpaces,
                    (size.width < options.minimumWidth || size.height < options.minimumHeight) {
                     rejectedWindows.append("#\(axIndex) tiny title=\(title ?? "untitled") size=\(Int(size.width))x\(Int(size.height))")
                     continue
@@ -172,6 +179,8 @@ final class WindowEnumerator {
                     bounds: CGRect(origin: position, size: size),
                     isOnScreen: !isMinimized && isOnCurrentSpace,
                     isMinimized: isMinimized,
+                    isHidden: isHidden,
+                    isMain: isMain,
                     spaceID: nil,
                     hasReliableWindowID: hasReliableWindowID
                 ))
@@ -192,13 +201,28 @@ final class WindowEnumerator {
                     bounds: .zero,
                     isOnScreen: true,
                     isMinimized: false,
+                    isHidden: false,
+                    isMain: false,
                     spaceID: nil,
                     hasReliableWindowID: false
                 )
                 windows.append(syntheticWindow)
             }
 
-            guard !windows.isEmpty else {
+            let visibleCGWindowIDs = bundleIdentifier == Self.finderBundleIdentifier
+                ? Self.visibleCGWindowIDs(forOwnerPID: pid)
+                : nil
+            let cgWindowNamesByID = bundleIdentifier == Self.finderBundleIdentifier
+                ? Self.cgWindowNamesByID(forOwnerPID: pid)
+                : nil
+            let refinedWindows = Self.refinedWindowsForApplication(
+                windows,
+                bundleIdentifier: bundleIdentifier,
+                visibleCGWindowIDsForOwner: visibleCGWindowIDs,
+                cgWindowNamesByID: cgWindowNamesByID
+            )
+
+            guard !refinedWindows.isEmpty else {
                 continue
             }
 
@@ -207,7 +231,7 @@ final class WindowEnumerator {
                 bundleIdentifier: bundleIdentifier,
                 name: name,
                 icon: icon,
-                windows: windows.map { info in
+                windows: refinedWindows.map { info in
                     let previewIdentity = PreviewIdentity(
                         ownerPID: info.ownerPID,
                         bundleIdentifier: info.ownerBundleIdentifier,
@@ -217,12 +241,14 @@ final class WindowEnumerator {
                         bounds: info.bounds,
                         hasReliableCGWindowID: info.hasReliableWindowID
                     )
-                    return WindowModel(
-                        from: info,
-                        previewImage: options.hydratePreviewImages
-                            ? WindowPreviewService.shared.cachedPreview(for: previewIdentity)
-                            : nil
-                    )
+                    var windowModel = WindowModel(from: info, previewImage: nil)
+                    if windowModel.isWindowlessPlaceholder {
+                        windowModel.subtitle = "No Windows"
+                    } else if options.hydratePreviewImages,
+                              let cachedPreview = WindowPreviewService.shared.cachedPreview(for: previewIdentity) {
+                        windowModel.previewImage = cachedPreview
+                    }
+                    return windowModel
                 },
                 isActive: app.isActive
             ))
@@ -230,7 +256,7 @@ final class WindowEnumerator {
             logInventory(
                 appName: name,
                 axWindowCount: axWindows.count,
-                acceptedWindows: windows,
+                acceptedWindows: refinedWindows,
                 rejectedWindows: rejectedWindows
             )
         }
@@ -243,20 +269,718 @@ final class WindowEnumerator {
         }
     }
 
+    static let finderBundleIdentifier = "com.apple.finder"
+
+    /// Applies generic dedupe, Finder shell suppression, then phantom filtering. Exposed for unit tests.
+    static func refinedWindowsForApplication(
+        _ windows: [WindowInfo],
+        bundleIdentifier: String,
+        visibleCGWindowIDsForOwner: Set<CGWindowID>? = nil,
+        cgWindowNamesByID: [CGWindowID: String]? = nil
+    ) -> [WindowInfo] {
+        let deduplicated = deduplicatedWindows(windows)
+        let afterShellSuppression = suppressingFinderDuplicateShells(
+            deduplicated,
+            bundleIdentifier: bundleIdentifier
+        )
+        return replacingFinderPhantomsWithPlaceholder(
+            afterShellSuppression,
+            bundleIdentifier: bundleIdentifier,
+            visibleCGWindowIDsForOwner: visibleCGWindowIDsForOwner,
+            cgWindowNamesByID: cgWindowNamesByID
+        )
+    }
+
+    /// Finder exposes multiple AX surfaces for one desktop/browser view. Drop generic shells only
+    /// when a real folder-titled browser window is also present.
+    static func suppressingFinderDuplicateShells(
+        _ windows: [WindowInfo],
+        bundleIdentifier: String
+    ) -> [WindowInfo] {
+        guard bundleIdentifier == finderBundleIdentifier, windows.count > 1 else {
+            return windows
+        }
+
+        let browserWindows = windows.filter(isSpecificFinderBrowserWindow)
+        guard !browserWindows.isEmpty else {
+            return windows
+        }
+
+        let kept = windows.filter { window in
+            shouldKeepFinderWindow(window, browserWindows: browserWindows)
+        }
+
+        return collapseFinderWindowsSharingCaptureID(kept)
+    }
+
+    /// When Finder has no genuinely visible windows, emit the same "No Windows" row used elsewhere.
+    static func replacingFinderPhantomsWithPlaceholder(
+        _ windows: [WindowInfo],
+        bundleIdentifier: String,
+        visibleCGWindowIDsForOwner: Set<CGWindowID>? = nil,
+        cgWindowNamesByID: [CGWindowID: String]? = nil
+    ) -> [WindowInfo] {
+        guard bundleIdentifier == finderBundleIdentifier, !windows.isEmpty else {
+            return windows
+        }
+
+        if !finderHasMainWindow(
+            among: windows,
+            cgWindowNamesByID: cgWindowNamesByID ?? [:],
+            visibleCGWindowIDsForOwner: visibleCGWindowIDsForOwner
+        ) {
+            return [finderWindowlessPlaceholder(from: windows[0])]
+        }
+
+        let genuine = windows.filter {
+            !isFinderPhantomWindow(
+                $0,
+                visibleCGWindowIDs: visibleCGWindowIDsForOwner,
+                cgWindowNamesByID: cgWindowNamesByID
+            )
+        }
+        if !genuine.isEmpty {
+            return genuine
+        }
+
+        return [finderWindowlessPlaceholder(from: windows[0])]
+    }
+
+    /// Returns true when Finder still has an AX restore row but no user-visible browser window.
+    static func shouldSuppressFinderPreview(for window: WindowModel) -> Bool {
+        guard !window.isWindowlessPlaceholder else { return false }
+
+        let ownerPID = window.previewIdentity.ownerPID ?? 0
+        guard ownerPID > 0,
+              let runningApp = NSRunningApplication(processIdentifier: ownerPID),
+              runningApp.bundleIdentifier == finderBundleIdentifier else {
+            return false
+        }
+
+        // Live AX check: closed Finder keeps restore rows with AXMain == false.
+        if !finderHasMainWindow(pid: ownerPID) {
+            return true
+        }
+
+        let liveAttributes = liveFinderWindowAttributes(
+            pid: ownerPID,
+            windowID: window.windowID,
+            axIndex: window.previewIdentity.axIndex,
+            title: window.title
+        )
+
+        let info = WindowInfo(
+            windowID: window.windowID,
+            ownerPID: ownerPID,
+            ownerBundleIdentifier: finderBundleIdentifier,
+            axIndex: window.previewIdentity.axIndex,
+            ownerName: "Finder",
+            windowName: liveAttributes?.title ?? window.title,
+            bounds: window.bounds,
+            isOnScreen: window.isOnScreen,
+            isMinimized: liveAttributes?.isMinimized ?? window.isMinimized,
+            isHidden: liveAttributes?.isHidden ?? false,
+            isMain: liveAttributes?.isMain ?? false,
+            spaceID: window.spaceID,
+            hasReliableWindowID: window.previewIdentity.hasReliableCGWindowID
+        )
+
+        return isFinderPhantomWindow(
+            info,
+            visibleCGWindowIDs: visibleCGWindowIDs(forOwnerPID: ownerPID),
+            cgWindowNamesByID: cgWindowNamesByID(forOwnerPID: ownerPID)
+        )
+    }
+
+    /// Finder restore rows remain in AX after "Close All". Frontmost Finder can mark them
+    /// main without a matching compositor title, so verify CG names for browser windows.
+    static func finderHasMainWindow(pid: pid_t) -> Bool {
+        guard AXIsProcessTrusted() else { return true }
+
+        let axApp = AXUIElementCreateApplication(pid)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let axWindows = windowsRef as? [AXUIElement] else {
+            return true
+        }
+
+        let cgWindowNamesByID = cgWindowNamesByID(forOwnerPID: pid)
+        if countsAsMultipleOpenFinderBrowsers(in: axWindows) {
+            return true
+        }
+
+        return axWindows.contains { axWindow in
+            axWindowCountsAsFinderMain(axWindow, cgWindowNamesByID: cgWindowNamesByID)
+        }
+    }
+
+    private static func countsAsMultipleOpenFinderBrowsers(in axWindows: [AXUIElement]) -> Bool {
+        let browserWindows = axWindows.filter { axWindow in
+            guard !(boolAttribute(kAXMinimizedAttribute, on: axWindow) ?? false) else {
+                return false
+            }
+
+            var titleRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef)
+            return isSpecificFinderBrowserTitle(normalizedWindowTitle((titleRef as? String) ?? ""))
+        }
+
+        return browserWindows.count >= 2
+    }
+
+    private static func finderHasMainWindow(
+        among windows: [WindowInfo],
+        cgWindowNamesByID: [CGWindowID: String],
+        visibleCGWindowIDsForOwner: Set<CGWindowID>? = nil
+    ) -> Bool {
+        let browserWindows = windows.filter(isSpecificFinderBrowserWindow)
+        if browserWindows.count >= 2 {
+            let visibleBrowsers = browserWindows.filter { window in
+                !window.isMinimized && !window.isHidden && window.isOnScreen
+            }
+            if visibleBrowsers.count >= 2 {
+                return true
+            }
+        }
+
+        return windows.contains { window in
+            windowCountsAsFinderMain(window, cgWindowNamesByID: cgWindowNamesByID)
+        }
+    }
+
+    private static func windowCountsAsFinderMain(
+        _ window: WindowInfo,
+        cgWindowNamesByID: [CGWindowID: String]
+    ) -> Bool {
+        guard !window.isMinimized, window.isMain else { return false }
+
+        let normalizedTitle = normalizedWindowTitle(window.windowName ?? "")
+        if isSpecificFinderBrowserTitle(normalizedTitle) {
+            guard window.hasReliableWindowID, window.windowID != 0 else { return false }
+            return finderAXTitleMatchesCG(
+                axTitle: window.windowName ?? "",
+                cgTitle: cgWindowNamesByID[window.windowID]
+            )
+        }
+
+        return normalizedTitle != "finder" && !normalizedTitle.isEmpty
+    }
+
+    private static func axWindowCountsAsFinderMain(
+        _ axWindow: AXUIElement,
+        cgWindowNamesByID: [CGWindowID: String]
+    ) -> Bool {
+        guard !(boolAttribute(kAXMinimizedAttribute, on: axWindow) ?? false),
+              boolAttribute(kAXMainAttribute, on: axWindow) ?? false else {
+            return false
+        }
+
+        var titleRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef)
+        let axTitle = (titleRef as? String) ?? ""
+        let normalizedTitle = normalizedWindowTitle(axTitle)
+
+        if isSpecificFinderBrowserTitle(normalizedTitle) {
+            var windowID: CGWindowID = 0
+            guard _AXUIElementGetWindow(axWindow, &windowID) == .success, windowID != 0 else {
+                return false
+            }
+            return finderAXTitleMatchesCG(axTitle: axTitle, cgTitle: cgWindowNamesByID[windowID])
+        }
+
+        return normalizedTitle != "finder" && !normalizedTitle.isEmpty
+    }
+
+    private struct LiveFinderWindowAttributes {
+        let title: String?
+        let isHidden: Bool
+        let isMain: Bool
+        let isMinimized: Bool
+    }
+
+    private static func liveFinderWindowAttributes(
+        pid: pid_t,
+        windowID: CGWindowID,
+        axIndex: Int?,
+        title: String
+    ) -> LiveFinderWindowAttributes? {
+        guard AXIsProcessTrusted() else { return nil }
+
+        let axApp = AXUIElementCreateApplication(pid)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let axWindows = windowsRef as? [AXUIElement] else {
+            return nil
+        }
+
+        let normalizedTarget = normalizedWindowTitle(title)
+
+        for (index, axWindow) in axWindows.enumerated() {
+            var matched = false
+            if let axIndex, index == axIndex {
+                matched = true
+            } else {
+                var axWindowID: CGWindowID = 0
+                if _AXUIElementGetWindow(axWindow, &axWindowID) == .success,
+                   axWindowID != 0,
+                   axWindowID == windowID {
+                    matched = true
+                } else if !normalizedTarget.isEmpty {
+                    var titleRef: CFTypeRef?
+                    AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef)
+                    let axTitle = normalizedWindowTitle((titleRef as? String) ?? "")
+                    matched = axTitle == normalizedTarget
+                }
+            }
+
+            guard matched else { continue }
+
+            var titleRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef)
+            return LiveFinderWindowAttributes(
+                title: titleRef as? String,
+                isHidden: boolAttribute(kAXHiddenAttribute, on: axWindow) ?? false,
+                isMain: boolAttribute(kAXMainAttribute, on: axWindow) ?? false,
+                isMinimized: boolAttribute(kAXMinimizedAttribute, on: axWindow) ?? false
+            )
+        }
+
+        return nil
+    }
+
+    private static func boolAttribute(_ attribute: String, on element: AXUIElement) -> Bool? {
+        var valueRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &valueRef) == .success else {
+            return nil
+        }
+        return valueRef as? Bool
+    }
+
+    static func normalizeFinderApplicationIfNeeded(_ app: ApplicationModel) -> ApplicationModel {
+        guard app.bundleIdentifier == finderBundleIdentifier else { return app }
+
+        let realWindows = app.windows.filter { !$0.isWindowlessPlaceholder }
+        if realWindows.count >= 2 {
+            return app
+        }
+
+        guard !finderHasMainWindow(pid: app.pid) else {
+            return app
+        }
+
+        var normalized = app
+        normalized.windows = [finderWindowlessPlaceholderModel(pid: app.pid, ownerName: app.name)]
+        return normalized
+    }
+
+    static func finderWindowlessPlaceholderModel(pid: pid_t, ownerName: String) -> WindowModel {
+        let template = WindowInfo(
+            windowID: 0,
+            ownerPID: pid,
+            ownerBundleIdentifier: finderBundleIdentifier,
+            axIndex: 0,
+            ownerName: ownerName,
+            windowName: "Desktop — Local",
+            bounds: CGRect(x: 40, y: 40, width: 900, height: 700),
+            isOnScreen: true,
+            isMinimized: false,
+            isHidden: false,
+            isMain: false,
+            spaceID: nil,
+            hasReliableWindowID: true
+        )
+        var model = WindowModel(from: finderWindowlessPlaceholder(from: template))
+        model.subtitle = "No Windows"
+        model.previewImage = nil
+        return model
+    }
+
+    static func finderWindowlessPlaceholder(from template: WindowInfo) -> WindowInfo {
+        let windowTitle = "No Windows"
+        let windowID = PreviewIdentity.pseudoWindowID(
+            ownerPID: template.ownerPID,
+            axIndex: 0,
+            title: windowTitle,
+            bounds: .zero
+        )
+        return WindowInfo(
+            windowID: windowID,
+            ownerPID: template.ownerPID,
+            ownerBundleIdentifier: template.ownerBundleIdentifier,
+            axIndex: 0,
+            ownerName: template.ownerName,
+            windowName: windowTitle,
+            bounds: .zero,
+            isOnScreen: false,
+            isMinimized: false,
+            isHidden: false,
+            isMain: false,
+            spaceID: nil,
+            hasReliableWindowID: false
+        )
+    }
+
+    private static func isFinderPhantomWindow(
+        _ window: WindowInfo,
+        visibleCGWindowIDs: Set<CGWindowID>?,
+        cgWindowNamesByID: [CGWindowID: String]?
+    ) -> Bool {
+        if window.isMinimized {
+            return false
+        }
+
+        if isFinderWindowlessPlaceholderInfo(window) {
+            return false
+        }
+
+        let normalizedTitle = normalizedWindowTitle(window.windowName ?? "")
+        let isBrowser = isSpecificFinderBrowserWindow(window)
+        let isGenericShell = normalizedTitle == "finder"
+        guard isBrowser || isGenericShell else {
+            return false
+        }
+
+        if window.isHidden {
+            return true
+        }
+
+        if !window.isOnScreen {
+            return true
+        }
+
+        if isOffScreenPhantomBounds(window.bounds) {
+            return true
+        }
+
+        if window.hasReliableWindowID,
+           window.windowID != 0,
+           let visibleCGWindowIDs,
+           !visibleCGWindowIDs.contains(window.windowID) {
+            return true
+        }
+
+        if window.hasReliableWindowID,
+           window.windowID != 0,
+           isBrowser,
+           let cgWindowNamesByID,
+           !finderAXTitleMatchesCG(
+               axTitle: window.windowName ?? "",
+               cgTitle: cgWindowNamesByID[window.windowID]
+           ) {
+            return true
+        }
+
+        return false
+    }
+
+    /// Finder restore surfaces keep an AX folder title but expose a different (or empty) CG window name.
+    private static func finderAXTitleMatchesCG(axTitle: String, cgTitle: String?) -> Bool {
+        let normalizedAX = normalizedWindowTitle(axTitle)
+        guard !normalizedAX.isEmpty else { return true }
+
+        guard let cgTitle else { return false }
+
+        let normalizedCG = normalizedWindowTitle(cgTitle)
+        guard !normalizedCG.isEmpty else { return false }
+
+        // macOS often reports the generic app name in CGWindowList for real Finder browsers.
+        if normalizedCG == "finder", isSpecificFinderBrowserTitle(normalizedAX) {
+            return true
+        }
+
+        return normalizedAX == normalizedCG
+            || normalizedCG.contains(normalizedAX)
+            || normalizedAX.contains(normalizedCG)
+    }
+
+    private static func isFinderWindowlessPlaceholderInfo(_ window: WindowInfo) -> Bool {
+        !window.hasReliableWindowID
+            && window.bounds == .zero
+            && !window.isMinimized
+            && !window.isOnScreen
+            && normalizedWindowTitle(window.windowName ?? "") == "no windows"
+    }
+
+    private static func isOffScreenPhantomBounds(_ bounds: CGRect) -> Bool {
+        guard bounds.width > 50, bounds.height > 50 else {
+            return false
+        }
+
+        return bounds.maxX < -80
+            || bounds.maxY < -80
+            || bounds.minX > 12_000
+            || bounds.minY > 12_000
+    }
+
+    private static func shouldKeepFinderWindow(
+        _ candidate: WindowInfo,
+        browserWindows: [WindowInfo]
+    ) -> Bool {
+        if isSpecificFinderBrowserWindow(candidate) {
+            return true
+        }
+
+        let normalizedTitle = normalizedWindowTitle(candidate.windowName ?? "")
+
+        if normalizedTitle == "finder" {
+            return false
+        }
+
+        if normalizedTitle.isEmpty || normalizedTitle == "untitled" {
+            if boundsOverlapSignificantly(candidate.bounds, anyOf: browserWindows) {
+                return false
+            }
+        }
+
+        if browserWindows.contains(where: { sharesFinderCaptureSurface(candidate, $0) }) {
+            return false
+        }
+
+        return true
+    }
+
+    private static func isSpecificFinderBrowserWindow(_ window: WindowInfo) -> Bool {
+        isSpecificFinderBrowserTitle(normalizedWindowTitle(window.windowName ?? ""))
+    }
+
+    private static func isSpecificFinderBrowserTitle(_ normalizedTitle: String) -> Bool {
+        guard !normalizedTitle.isEmpty, normalizedTitle != "finder", normalizedTitle != "untitled" else {
+            return false
+        }
+        return true
+    }
+
+    private static func sharesFinderCaptureSurface(_ lhs: WindowInfo, _ rhs: WindowInfo) -> Bool {
+        if lhs.hasReliableWindowID,
+           rhs.hasReliableWindowID,
+           lhs.windowID != 0,
+           lhs.windowID == rhs.windowID {
+            return true
+        }
+        return boundsOverlapSignificantly(lhs.bounds, rhs.bounds)
+    }
+
+    private static func boundsOverlapSignificantly(_ lhs: CGRect, anyOf others: [WindowInfo]) -> Bool {
+        others.contains { boundsOverlapSignificantly(lhs, $0.bounds) }
+    }
+
+    private static func boundsOverlapSignificantly(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
+        guard lhs.width > 50, lhs.height > 50, rhs.width > 50, rhs.height > 50 else {
+            return false
+        }
+
+        let intersection = lhs.intersection(rhs)
+        guard intersection.width > 1, intersection.height > 1 else {
+            return false
+        }
+
+        let intersectionArea = intersection.width * intersection.height
+        let smallerArea = min(lhs.width * lhs.height, rhs.width * rhs.height)
+        guard smallerArea > 0 else { return false }
+
+        return intersectionArea / smallerArea >= 0.82
+    }
+
+    private static func collapseFinderWindowsSharingCaptureID(_ windows: [WindowInfo]) -> [WindowInfo] {
+        var bestByWindowID: [CGWindowID: WindowInfo] = [:]
+        var withoutReliableID: [WindowInfo] = []
+
+        for window in windows {
+            guard window.hasReliableWindowID, window.windowID != 0 else {
+                withoutReliableID.append(window)
+                continue
+            }
+
+            if let existing = bestByWindowID[window.windowID] {
+                if prefersFinderWindowForCapture(window, over: existing) {
+                    bestByWindowID[window.windowID] = window
+                }
+            } else {
+                bestByWindowID[window.windowID] = window
+            }
+        }
+
+        return withoutReliableID + bestByWindowID.values.sorted {
+            ($0.axIndex ?? Int.max) < ($1.axIndex ?? Int.max)
+        }
+    }
+
+    private static func prefersFinderWindowForCapture(_ candidate: WindowInfo, over incumbent: WindowInfo) -> Bool {
+        let candidateScore = windowPreferenceScore(candidate)
+        let incumbentScore = windowPreferenceScore(incumbent)
+
+        if candidateScore != incumbentScore {
+            return candidateScore > incumbentScore
+        }
+
+        if isSpecificFinderBrowserWindow(candidate) != isSpecificFinderBrowserWindow(incumbent) {
+            return isSpecificFinderBrowserWindow(candidate)
+        }
+
+        return (candidate.axIndex ?? Int.max) < (incumbent.axIndex ?? Int.max)
+    }
+
+    private static func deduplicatedWindows(_ windows: [WindowInfo]) -> [WindowInfo] {
+        var result: [WindowInfo] = []
+
+        for window in windows {
+            if let duplicateIndex = result.firstIndex(where: { existing in
+                windowsRepresentSameSurface(existing, window)
+            }) {
+                if windowPreferenceScore(window) > windowPreferenceScore(result[duplicateIndex]) {
+                    result[duplicateIndex] = window
+                }
+            } else {
+                result.append(window)
+            }
+        }
+
+        return result
+    }
+
+    private static func windowsRepresentSameSurface(_ lhs: WindowInfo, _ rhs: WindowInfo) -> Bool {
+        let lhsIdentity = previewIdentity(for: lhs)
+        let rhsIdentity = previewIdentity(for: rhs)
+
+        if lhsIdentity.matches(rhsIdentity) {
+            return true
+        }
+
+        if lhs.hasReliableWindowID,
+           rhs.hasReliableWindowID,
+           lhs.windowID != 0,
+           rhs.windowID != 0,
+           lhs.windowID != rhs.windowID {
+            return false
+        }
+
+        let lhsTitle = normalizedWindowTitle(lhs.windowName ?? lhs.ownerName)
+        let rhsTitle = normalizedWindowTitle(rhs.windowName ?? rhs.ownerName)
+        guard !lhsTitle.isEmpty, lhsTitle == rhsTitle else {
+            return false
+        }
+
+        return lhs.ownerPID == rhs.ownerPID
+    }
+
+    private static func previewIdentity(for window: WindowInfo) -> PreviewIdentity {
+        PreviewIdentity(
+            ownerPID: window.ownerPID,
+            bundleIdentifier: window.ownerBundleIdentifier,
+            cgWindowID: window.windowID,
+            axIndex: window.axIndex,
+            title: window.windowName ?? window.ownerName,
+            bounds: window.bounds,
+            hasReliableCGWindowID: window.hasReliableWindowID
+        )
+    }
+
+    private static func normalizedWindowTitle(_ title: String) -> String {
+        PreviewIdentity.normalizedTitle(title)
+    }
+
+    private static func windowPreferenceScore(_ window: WindowInfo) -> Int {
+        var score = 0
+
+        if window.hasReliableWindowID {
+            score += 1_000
+        }
+        if window.isOnScreen {
+            score += 200
+        }
+        if !window.isMinimized {
+            score += 100
+        }
+
+        let area = Int(window.bounds.width * window.bounds.height)
+        if area > 0 {
+            score += min(area / 10_000, 150)
+        }
+
+        if let axIndex = window.axIndex {
+            score += max(0, 20 - axIndex)
+        }
+
+        return score
+    }
+
     private static func currentSpaceWindowIDs() -> Set<CGWindowID>? {
+        Set(visibleCGWindowList().map(\.windowID))
+    }
+
+    private static func visibleCGWindowIDs(forOwnerPID pid: pid_t) -> Set<CGWindowID> {
+        Set(
+            visibleCGWindowList()
+                .filter { $0.ownerPID == pid }
+                .map(\.windowID)
+        )
+    }
+
+    private static func cgWindowNamesByID(forOwnerPID pid: pid_t) -> [CGWindowID: String] {
+        guard let windowList = CGWindowListCopyWindowInfo(
+            [.excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else {
+            return [:]
+        }
+
+        var names: [CGWindowID: String] = [:]
+        for info in windowList {
+            guard let ownerPID = info[kCGWindowOwnerPID as String] as? Int32,
+                  ownerPID == pid,
+                  let number = info[kCGWindowNumber as String] as? NSNumber else {
+                continue
+            }
+
+            let windowID = CGWindowID(number.uint32Value)
+            names[windowID] = info[kCGWindowName as String] as? String ?? ""
+        }
+
+        return names
+    }
+
+    private struct VisibleCGWindow {
+        let windowID: CGWindowID
+        let ownerPID: pid_t
+    }
+
+    private static func visibleCGWindowList() -> [VisibleCGWindow] {
         guard let windowList = CGWindowListCopyWindowInfo(
             [.optionOnScreenOnly, .excludeDesktopElements],
             kCGNullWindowID
         ) as? [[String: Any]] else {
-            return nil
+            return []
         }
 
-        return Set(windowList.compactMap { info in
+        return windowList.compactMap { info in
             guard let number = info[kCGWindowNumber as String] as? NSNumber else {
                 return nil
             }
-            return CGWindowID(number.uint32Value)
-        })
+
+            let layer = info[kCGWindowLayer as String] as? Int ?? 0
+            guard layer == 0 else { return nil }
+
+            if let alpha = info[kCGWindowAlpha as String] as? CGFloat, alpha < 0.05 {
+                return nil
+            }
+
+            guard let ownerPID = info[kCGWindowOwnerPID as String] as? Int32 else {
+                return nil
+            }
+
+            guard let boundsDict = info[kCGWindowBounds as String] as? [String: Any],
+                  let width = boundsDict["Width"] as? CGFloat,
+                  let height = boundsDict["Height"] as? CGFloat,
+                  width >= 50,
+                  height >= 50 else {
+                return nil
+            }
+
+            return VisibleCGWindow(
+                windowID: CGWindowID(number.uint32Value),
+                ownerPID: pid_t(ownerPID)
+            )
+        }
     }
 
     private func logInventory(
