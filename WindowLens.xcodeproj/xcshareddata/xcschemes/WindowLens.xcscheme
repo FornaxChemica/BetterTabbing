@@ -18,7 +18,7 @@
                BlueprintIdentifier = "2F0CECEB6033261F543B3511"
                BuildableName = "WindowLens.app"
                BlueprintName = "WindowLens"
-               ReferencedContainer = "container:BetterTabbing.xcodeproj">
+               ReferencedContainer = "container:WindowLens.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
          <BuildActionEntry
@@ -30,9 +30,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "6A7B8C9D0E1F20314253647"
-               BuildableName = "BetterTabbingTests.xctest"
-               BlueprintName = "BetterTabbingTests"
-               ReferencedContainer = "container:BetterTabbing.xcodeproj">
+               BuildableName = "WindowLensTests.xctest"
+               BlueprintName = "WindowLensTests"
+               ReferencedContainer = "container:WindowLens.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -49,9 +49,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "6A7B8C9D0E1F20314253647"
-               BuildableName = "BetterTabbingTests.xctest"
-               BlueprintName = "BetterTabbingTests"
-               ReferencedContainer = "container:BetterTabbing.xcodeproj">
+               BuildableName = "WindowLensTests.xctest"
+               BlueprintName = "WindowLensTests"
+               ReferencedContainer = "container:WindowLens.xcodeproj">
             </BuildableReference>
          </TestableReference>
       </Testables>
@@ -73,7 +73,7 @@
             BlueprintIdentifier = "2F0CECEB6033261F543B3511"
             BuildableName = "WindowLens.app"
             BlueprintName = "WindowLens"
-            ReferencedContainer = "container:BetterTabbing.xcodeproj">
+            ReferencedContainer = "container:WindowLens.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -90,7 +90,7 @@
             BlueprintIdentifier = "2F0CECEB6033261F543B3511"
             BuildableName = "WindowLens.app"
             BlueprintName = "WindowLens"
-            ReferencedContainer = "container:BetterTabbing.xcodeproj">
+            ReferencedContainer = "container:WindowLens.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

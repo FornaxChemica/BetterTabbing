@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 @main
-struct BetterTabbingApp: App {
+struct WindowLensApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var appState = AppState.shared
 

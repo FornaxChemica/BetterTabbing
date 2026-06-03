@@ -7,20 +7,20 @@ let package = Package(
         .macOS(.v26)
     ],
     products: [
-        .executable(name: "WindowLens", targets: ["BetterTabbing"])
+        .executable(name: "WindowLens", targets: ["WindowLens"])
     ],
     targets: [
         .executableTarget(
-            name: "BetterTabbing",
-            path: "BetterTabbing/Sources",
+            name: "WindowLens",
+            path: "WindowLens/Sources",
             resources: [
                 .process("../Resources")
             ]
         ),
         .testTarget(
-            name: "BetterTabbingTests",
-            dependencies: ["BetterTabbing"],
-            path: "BetterTabbing/Tests"
+            name: "WindowLensTests",
+            dependencies: ["WindowLens"],
+            path: "WindowLens/Tests"
         )
     ]
 )

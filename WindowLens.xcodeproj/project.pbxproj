@@ -19,7 +19,7 @@
 		1494A5B6C7D8E9FAB01234 /* KeyboardShortcutBinding.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F60718293A4B5C6D7E8F9 /* KeyboardShortcutBinding.swift */; };
 		15A5B6C7D8E9FAB0123456 /* SettingsWindowConfigurator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B7C8D9E0F1121314151617 /* SettingsWindowConfigurator.swift */; };
 		16B6C7D8E9FAB012345678 /* WindowSlotAssignmentSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C8D9E0F11213141516171 /* WindowSlotAssignmentSheet.swift */; };
-		6A7B8C9D0E1F20314253649 /* BetterTabbingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69C2CC8A3992ED9799146F57 /* BetterTabbingTests.swift */; };
+		6A7B8C9D0E1F20314253649 /* WindowLensTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69C2CC8A3992ED9799146F57 /* WindowLensTests.swift */; };
 		0931EEC0C52390AE9E797073 /* WindowCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E43D000BA543AF7D69C78F5 /* WindowCache.swift */; };
 		0C2D3E4F5061728394A5B6C /* WindowNumberRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C3D4E5F60718293A4B5C6D /* WindowNumberRegistry.swift */; };
 		0D3E4F5061728394A5B6C7D /* WindowSlotBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D4E5F60718293A4B5C6D7E /* WindowSlotBadge.swift */; };
@@ -35,7 +35,7 @@
 		50163D671F411C729E61E6E2 /* SwitcherPanelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68539B9259FF9F54C4480455 /* SwitcherPanelManager.swift */; };
 		634377283106F541F1F85290 /* ModifierKeyTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF8E5B954CA3BE01A7054453 /* ModifierKeyTracker.swift */; };
 		762E887BB320487D408DB72A /* SearchResultsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE2A205CFAFC6ABF061E4362 /* SearchResultsListView.swift */; };
-		774E5EC3EB80A43B0E8FABB2 /* BetterTabbingApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5944484C670B2047C9756146 /* BetterTabbingApp.swift */; };
+		774E5EC3EB80A43B0E8FABB2 /* WindowLensApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5944484C670B2047C9756146 /* WindowLensApp.swift */; };
 		84BC301C10F29D18980E96A5 /* AppGridView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D399F35B0D527A537AA238C8 /* AppGridView.swift */; };
 		8A1330565C0C617C5847D6C6 /* SearchBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD092CDD7E60592BDB2CCBA6 /* SearchBarView.swift */; };
 		9EC4D1A473C5AF596C3DA409 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45B0C675B8CD00748D4C339F /* AppDelegate.swift */; };
@@ -60,7 +60,7 @@
 
 /* Begin PBXFileReference section */
 		08B313704DC040E4FAEFE403 /* ResourceMonitorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourceMonitorView.swift; sourceTree = "<group>"; };
-		0B1D454865BA86143195A78A /* BetterTabbing.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BetterTabbing.entitlements; sourceTree = "<group>"; };
+		0B1D454865BA86143195A78A /* WindowLens.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = WindowLens.entitlements; sourceTree = "<group>"; };
 		1016019BF84431C6A6F38F3C /* SwitcherView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwitcherView.swift; sourceTree = "<group>"; };
 		1E028C9EC24B0418472AA627 /* PermissionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionManager.swift; sourceTree = "<group>"; };
 		1E43D000BA543AF7D69C78F5 /* WindowCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowCache.swift; sourceTree = "<group>"; };
@@ -79,7 +79,7 @@
 		4C9A605EE7A5A11BC7D76F8A /* AXWindowHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AXWindowHelper.swift; sourceTree = "<group>"; };
 		520A3F505409ED23ED5C22A9 /* WindowListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowListView.swift; sourceTree = "<group>"; };
 		57D4165D0E9E57A814445FBA /* WindowPreviewService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowPreviewService.swift; sourceTree = "<group>"; };
-		5944484C670B2047C9756146 /* BetterTabbingApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BetterTabbingApp.swift; sourceTree = "<group>"; };
+		5944484C670B2047C9756146 /* WindowLensApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowLensApp.swift; sourceTree = "<group>"; };
 		5F60718293A4B5C6D7E8F90 /* WindowSlotHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowSlotHUD.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60718293A4B5 /* SettingsRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsRootView.swift; sourceTree = "<group>"; };
 		B2C3D4E5F60718293A4B5C6 /* FeaturesSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeaturesSettingsView.swift; sourceTree = "<group>"; };
@@ -93,8 +93,8 @@
 		65C7FE39C23020BCF9989E36 /* generate-icon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "generate-icon.swift"; sourceTree = "<group>"; };
 		68539B9259FF9F54C4480455 /* SwitcherPanelManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwitcherPanelManager.swift; sourceTree = "<group>"; };
 		686F81C9B7376DBDFD5E3C93 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		69C2CC8A3992ED9799146F57 /* BetterTabbingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BetterTabbingTests.swift; sourceTree = "<group>"; };
-		6A7B8C9D0E1F20314253648 /* BetterTabbingTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BetterTabbingTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		69C2CC8A3992ED9799146F57 /* WindowLensTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowLensTests.swift; sourceTree = "<group>"; };
+		6A7B8C9D0E1F20314253648 /* WindowLensTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WindowLensTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		7A8BD25C09D59564BBE63E8D /* AppTileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTileView.swift; sourceTree = "<group>"; };
 		B4E08258B64673399D814024 /* CircularProgressRing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CircularProgressRing.swift; sourceTree = "<group>"; };
 		BAF871667971FE98A6B67BBA /* FuzzyMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FuzzyMatcher.swift; sourceTree = "<group>"; };
@@ -187,7 +187,7 @@
 			isa = PBXGroup;
 			children = (
 				44D5452060360EC52161C078 /* WindowLens.app */,
-				6A7B8C9D0E1F20314253648 /* BetterTabbingTests.xctest */,
+				6A7B8C9D0E1F20314253648 /* WindowLensTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -218,7 +218,7 @@
 		518DA81DB9B99529C0C0AEBE = {
 			isa = PBXGroup;
 			children = (
-				BBCDD3774FE90505898EA382 /* BetterTabbing */,
+				BBCDD3774FE90505898EA382 /* WindowLens */,
 				FE39F65E2E0D04E61C150B84 /* Package.swift */,
 				DB98C7EC8C47A3A89E4293AF /* AppIcon.icns */,
 				370A59B59D1C745CB0846EE8 /* build-app.sh */,
@@ -233,7 +233,7 @@
 			children = (
 				45B0C675B8CD00748D4C339F /* AppDelegate.swift */,
 				FE222D814A9B0F3B619130C8 /* AppState.swift */,
-				5944484C670B2047C9756146 /* BetterTabbingApp.swift */,
+				5944484C670B2047C9756146 /* WindowLensApp.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -250,7 +250,7 @@
 		68ADC7EDDE05A3A1D3828C08 /* Tests */ = {
 			isa = PBXGroup;
 			children = (
-				69C2CC8A3992ED9799146F57 /* BetterTabbingTests.swift */,
+				69C2CC8A3992ED9799146F57 /* WindowLensTests.swift */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -304,16 +304,16 @@
 			path = Components;
 			sourceTree = "<group>";
 		};
-		BBCDD3774FE90505898EA382 /* BetterTabbing */ = {
+		BBCDD3774FE90505898EA382 /* WindowLens */ = {
 			isa = PBXGroup;
 			children = (
 				2E7216D6F7E40D4774B4D5E3 /* Sources */,
 				BE6442B66B438A8F591A4F75 /* Resources */,
 				68ADC7EDDE05A3A1D3828C08 /* Tests */,
 				5EB2E50392FFD5A5D5A660B4 /* Info.plist */,
-				0B1D454865BA86143195A78A /* BetterTabbing.entitlements */,
+				0B1D454865BA86143195A78A /* WindowLens.entitlements */,
 			);
-			path = BetterTabbing;
+			path = WindowLens;
 			sourceTree = "<group>";
 		};
 		BE1F492DC1085BC4533108E3 /* SwitcherWindow */ = {
@@ -372,13 +372,13 @@
 			dependencies = (
 			);
 			name = WindowLens;
-			productName = BetterTabbing;
+			productName = WindowLens;
 			productReference = 44D5452060360EC52161C078 /* WindowLens.app */;
 			productType = "com.apple.product-type.application";
 		};
-		6A7B8C9D0E1F20314253647 /* BetterTabbingTests */ = {
+		6A7B8C9D0E1F20314253647 /* WindowLensTests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 6A7B8C9D0E1F2031425364E /* Build configuration list for PBXNativeTarget "BetterTabbingTests" */;
+			buildConfigurationList = 6A7B8C9D0E1F2031425364E /* Build configuration list for PBXNativeTarget "WindowLensTests" */;
 			buildPhases = (
 				6A7B8C9D0E1F2031425364A /* Sources */,
 				6A7B8C9D0E1F2031425364B /* Frameworks */,
@@ -388,9 +388,9 @@
 			dependencies = (
 				6A7B8C9D0E1F2031425364C /* PBXTargetDependency */,
 			);
-			name = BetterTabbingTests;
-			productName = BetterTabbingTests;
-			productReference = 6A7B8C9D0E1F20314253648 /* BetterTabbingTests.xctest */;
+			name = WindowLensTests;
+			productName = WindowLensTests;
+			productReference = 6A7B8C9D0E1F20314253648 /* WindowLensTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
 /* End PBXNativeTarget section */
@@ -414,7 +414,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 8CB014CF6CC51EFAF0098F2A /* Build configuration list for PBXProject "BetterTabbing" */;
+			buildConfigurationList = 8CB014CF6CC51EFAF0098F2A /* Build configuration list for PBXProject "WindowLens" */;
 			compatibilityVersion = "Xcode 15.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -428,7 +428,7 @@
 			projectRoot = "";
 			targets = (
 				2F0CECEB6033261F543B3511 /* WindowLens */,
-				6A7B8C9D0E1F20314253647 /* BetterTabbingTests */,
+				6A7B8C9D0E1F20314253647 /* WindowLensTests */,
 			);
 		};
 /* End PBXProject section */
@@ -450,7 +450,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				6A7B8C9D0E1F20314253649 /* BetterTabbingTests.swift in Sources */,
+				6A7B8C9D0E1F20314253649 /* WindowLensTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -460,7 +460,7 @@
 			files = (
 				9EC4D1A473C5AF596C3DA409 /* AppDelegate.swift in Sources */,
 				FCBE066DB7D0E9CD8C45D201 /* AppState.swift in Sources */,
-				774E5EC3EB80A43B0E8FABB2 /* BetterTabbingApp.swift in Sources */,
+				774E5EC3EB80A43B0E8FABB2 /* WindowLensApp.swift in Sources */,
 				C3610C149F5507A74D22654F /* AXWindowHelper.swift in Sources */,
 				AF0AFD2C17472D0530CE75E3 /* KeyboardEventTap.swift in Sources */,
 				634377283106F541F1F85290 /* ModifierKeyTracker.swift in Sources */,
@@ -521,7 +521,7 @@
 		3DDF142C91E4BE3A6BA5A69E /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = BetterTabbing/BetterTabbing.entitlements;
+				CODE_SIGN_ENTITLEMENTS = WindowLens/WindowLens.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
@@ -531,7 +531,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = BetterTabbing/Info.plist;
+				INFOPLIST_FILE = WindowLens/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -612,7 +612,7 @@
 		4D8F6610AF6606489ED8DFBC /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = BetterTabbing/BetterTabbing.entitlements;
+				CODE_SIGN_ENTITLEMENTS = WindowLens/WindowLens.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
@@ -622,7 +622,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = BetterTabbing/Info.plist;
+				INFOPLIST_FILE = WindowLens/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -743,7 +743,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		6A7B8C9D0E1F2031425364E /* Build configuration list for PBXNativeTarget "BetterTabbingTests" */ = {
+		6A7B8C9D0E1F2031425364E /* Build configuration list for PBXNativeTarget "WindowLensTests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				6A7B8C9D0E1F2031425364F /* Debug */,
@@ -761,7 +761,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		8CB014CF6CC51EFAF0098F2A /* Build configuration list for PBXProject "BetterTabbing" */ = {
+		8CB014CF6CC51EFAF0098F2A /* Build configuration list for PBXProject "WindowLens" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				4A43692AD8BCEEB8B727C85B /* Debug */,

@@ -3,7 +3,7 @@ import CoreGraphics
 import XCTest
 @testable import WindowLens
 
-final class BetterTabbingTests: XCTestCase {
+final class WindowLensTests: XCTestCase {
 
     // MARK: - ModifierKeyTracker Tests
 
