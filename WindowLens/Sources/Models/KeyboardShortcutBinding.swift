@@ -55,6 +55,7 @@ struct KeyboardShortcutBinding: Codable, Equatable, Hashable {
         case kVK_ANSI_Z: return "Z"
         case kVK_ANSI_E: return "E"
         case kVK_ANSI_Q: return "Q"
+        case kVK_ANSI_U: return "U"
         case kVK_ANSI_W: return "W"
         case kVK_ANSI_1: return "1"
         case kVK_ANSI_2: return "2"
@@ -77,6 +78,7 @@ enum ShortcutAction: String, CaseIterable, Codable {
     case windowSlotModifier
     case workspaceOpen
     case resourceMonitorToggle
+    case usageHeatmapOpen
 
     var defaultBinding: KeyboardShortcutBinding {
         switch self {
@@ -90,6 +92,8 @@ enum ShortcutAction: String, CaseIterable, Codable {
             return KeyboardShortcutBinding(keyCode: UInt16(kVK_Tab), modifiers: [.option])
         case .resourceMonitorToggle:
             return KeyboardShortcutBinding(keyCode: UInt16(kVK_ANSI_E), modifiers: [])
+        case .usageHeatmapOpen:
+            return KeyboardShortcutBinding(keyCode: UInt16(kVK_ANSI_U), modifiers: [.command, .shift])
         }
     }
 
@@ -113,6 +117,7 @@ struct ShortcutPreferences: Codable, Equatable {
     var windowSlotModifier: ModifierKey = .control
     var workspaceOpen: KeyboardShortcutBinding = ShortcutAction.workspaceOpen.defaultBinding
     var resourceMonitorToggle: KeyboardShortcutBinding = ShortcutAction.resourceMonitorToggle.defaultBinding
+    var usageHeatmapOpen: KeyboardShortcutBinding = ShortcutAction.usageHeatmapOpen.defaultBinding
 
     func binding(for action: ShortcutAction) -> KeyboardShortcutBinding {
         switch action {
@@ -122,6 +127,7 @@ struct ShortcutPreferences: Codable, Equatable {
             return KeyboardShortcutBinding(keyCode: UInt16(kVK_ANSI_1), modifiers: [windowSlotModifier])
         case .workspaceOpen: return workspaceOpen
         case .resourceMonitorToggle: return resourceMonitorToggle
+        case .usageHeatmapOpen: return usageHeatmapOpen
         }
     }
 
@@ -139,6 +145,8 @@ struct ShortcutPreferences: Codable, Equatable {
             workspaceOpen = binding
         case .resourceMonitorToggle:
             resourceMonitorToggle = binding
+        case .usageHeatmapOpen:
+            usageHeatmapOpen = binding
         }
     }
 

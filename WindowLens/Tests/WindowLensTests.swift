@@ -106,6 +106,17 @@ final class WindowLensTests: XCTestCase {
         XCTAssertEqual(filtered.count, 1)
     }
 
+    func testFuzzyMatcherMatchesSingleWindowTitle() {
+        var messages = makeApp(pid: 42, name: "Messages")
+        messages.windows = [WindowModel(windowID: 99, title: "Goldfish")]
+
+        let results = FuzzyMatcher.search([messages], query: "Goldfish")
+
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results.first?.matchedText, "Goldfish")
+        XCTAssertEqual(results.first?.targetWindowIndex, 0)
+    }
+
     // MARK: - WindowModel Tests
 
     func testWindowModelEquality() {
@@ -172,6 +183,366 @@ final class WindowLensTests: XCTestCase {
     func testKeyboardShortcutBindingDisplayString() {
         let binding = ShortcutAction.windowHistoryBack.defaultBinding
         XCTAssertEqual(binding.displayString, "⌘ ⇧ Z")
+    }
+
+    func testWorkspaceCommandStripCycleKeySymbolsOmitOpenModifier() {
+        let workspaceOpen = ShortcutAction.workspaceOpen.defaultBinding
+        XCTAssertEqual(
+            WorkspaceCommandStripSymbols.cycleKeySymbols(from: workspaceOpen),
+            ["tab"]
+        )
+    }
+
+    func testWorkspaceCommandStripKeySymbolsIncludeModifiers() {
+        let binding = KeyboardShortcutBinding(
+            keyCode: UInt16(kVK_ANSI_E),
+            modifiers: [.command, .shift]
+        )
+        XCTAssertEqual(
+            WorkspaceCommandStripSymbols.keySymbols(for: binding),
+            ["cmd", "shift", "E"]
+        )
+    }
+
+    func testWorkspaceCommandStripKeySymbolMapsNavigationKeys() {
+        XCTAssertEqual(WorkspaceCommandStripSymbols.keySymbol(for: UInt16(kVK_UpArrow)), "up")
+        XCTAssertEqual(WorkspaceCommandStripSymbols.keySymbol(for: UInt16(kVK_DownArrow)), "down")
+        XCTAssertEqual(WorkspaceCommandStripSymbols.keySymbol(for: UInt16(kVK_Escape)), "esc")
+    }
+
+    func testSearchBarPlaceholderCurrentAppScope() {
+        XCTAssertEqual(
+            SearchBarView.placeholder(scope: .currentApp, appName: "Safari"),
+            "Search Safari windows…"
+        )
+    }
+
+    func testSearchBarPlaceholderAllWindowsScope() {
+        XCTAssertEqual(
+            SearchBarView.placeholder(scope: .allWindows, appName: "Safari"),
+            "Search all windows…"
+        )
+    }
+
+    func testSearchBarPlaceholderFallsBackWhenAppNameMissing() {
+        XCTAssertEqual(
+            SearchBarView.placeholder(scope: .currentApp, appName: nil),
+            "Search this app windows…"
+        )
+    }
+
+    // MARK: - WindowUsageStore Tests
+
+    @MainActor
+    func testWindowUsageStoreUpsertIncrementsAccessCount() {
+        let store = WindowUsageStore(forTestingWithMaxEntries: 100)
+        let identity = makeUsagePreviewIdentity(windowID: 101, title: "Inbox")
+
+        store.recordAccess(identity: identity, appName: "Mail", windowTitle: "Inbox")
+        store.recordAccess(identity: identity, appName: "Mail", windowTitle: "Inbox")
+
+        let stale = store.windowsNotAccessedSince(.distantFuture)
+        XCTAssertEqual(stale.count, 1)
+        XCTAssertEqual(stale[0].accessCount, 2)
+        XCTAssertEqual(stale[0].lastAppName, "Mail")
+        XCTAssertEqual(stale[0].lastWindowTitle, "Inbox")
+        XCTAssertEqual(stale[0].surfaceID, identity.stableKey)
+    }
+
+    @MainActor
+    func testWindowUsageStorePruneRemovesOldestBatch() {
+        let store = WindowUsageStore(forTestingWithMaxEntries: 2, pruneBatchSize: 1)
+
+        for index in 0..<3 {
+            let identity = makeUsagePreviewIdentity(windowID: CGWindowID(200 + index), title: "Window \(index)")
+            store.recordAccess(identity: identity, appName: "App", windowTitle: "Window \(index)")
+            Thread.sleep(forTimeInterval: 0.005)
+        }
+
+        XCTAssertEqual(store.recordCountForTesting, 2)
+        let remainingTitles = Set(
+            store.windowsNotAccessedSince(.distantFuture).map(\.lastWindowTitle)
+        )
+        XCTAssertFalse(remainingTitles.contains("Window 0"))
+        XCTAssertTrue(remainingTitles.contains("Window 1"))
+        XCTAssertTrue(remainingTitles.contains("Window 2"))
+    }
+
+    @MainActor
+    func testWindowUsageStoreWindowsNotAccessedSinceSortsOldestFirst() {
+        let store = WindowUsageStore(forTestingWithMaxEntries: 100)
+        let oldIdentity = makeUsagePreviewIdentity(windowID: 301, title: "Old")
+        let newIdentity = makeUsagePreviewIdentity(windowID: 302, title: "New")
+
+        store.recordAccess(identity: oldIdentity, appName: "App", windowTitle: "Old")
+        Thread.sleep(forTimeInterval: 0.01)
+        store.recordAccess(identity: newIdentity, appName: "App", windowTitle: "New")
+
+        let cutoff = Date()
+        let stale = store.windowsNotAccessedSince(cutoff)
+        XCTAssertEqual(stale.count, 2)
+        XCTAssertEqual(stale[0].lastWindowTitle, "Old")
+        XCTAssertEqual(stale[1].lastWindowTitle, "New")
+    }
+
+    func testWindowUsageRecordPersistenceRoundTrip() throws {
+        let now = Date()
+        let records: [String: WindowUsageRecord] = [
+            "pid:1:wid:2": WindowUsageRecord(
+                surfaceID: "pid:1:wid:2",
+                lastAccessedAt: now,
+                accessCount: 3,
+                lastAppName: "Safari",
+                lastWindowTitle: "GitHub",
+                firstSeenAt: now.addingTimeInterval(-3600)
+            )
+        ]
+
+        let data = try JSONEncoder().encode(records)
+        let decoded = try JSONDecoder().decode([String: WindowUsageRecord].self, from: data)
+        XCTAssertEqual(decoded, records)
+    }
+
+    @MainActor
+    func testWindowUsageStoreDecodeFailureStartsFresh() {
+        let suiteName = "WindowUsageStoreTests.\(UUID().uuidString)"
+        let userDefaults = UserDefaults(suiteName: suiteName)!
+        let key = "test.usage.\(UUID().uuidString)"
+        userDefaults.set(Data([0xFF, 0x00, 0x01]), forKey: key)
+
+        let store = WindowUsageStore(
+            forTestingWithMaxEntries: 100,
+            persistenceKey: key,
+            userDefaults: userDefaults,
+            loadPersistedData: true
+        )
+
+        XCTAssertEqual(store.recordCountForTesting, 0)
+        XCTAssertNil(userDefaults.data(forKey: key))
+    }
+
+    @MainActor
+    func testWindowUsageStorePersistsAcrossLoad() {
+        let suiteName = "WindowUsageStoreTests.\(UUID().uuidString)"
+        let userDefaults = UserDefaults(suiteName: suiteName)!
+        let key = "test.usage.\(UUID().uuidString)"
+        let identity = makeUsagePreviewIdentity(windowID: 401, title: "Persist")
+
+        let writer = WindowUsageStore(
+            forTestingWithMaxEntries: 100,
+            persistenceKey: key,
+            userDefaults: userDefaults,
+            loadPersistedData: false
+        )
+        writer.recordAccess(identity: identity, appName: "Notes", windowTitle: "Persist")
+        writer.persistImmediatelyForTesting()
+
+        let reader = WindowUsageStore(
+            forTestingWithMaxEntries: 100,
+            persistenceKey: key,
+            userDefaults: userDefaults,
+            loadPersistedData: true
+        )
+
+        XCTAssertEqual(reader.recordCountForTesting, 1)
+        let records = reader.windowsNotAccessedSince(.distantFuture)
+        XCTAssertEqual(records.first?.lastAppName, "Notes")
+    }
+
+    @MainActor
+    func testWindowUsageStoreSkipsWindowLensAndPlaceholderIdentities() {
+        let store = WindowUsageStore(forTestingWithMaxEntries: 100)
+
+        let windowLensIdentity = PreviewIdentity(
+            ownerPID: 1,
+            bundleIdentifier: Bundle.main.bundleIdentifier,
+            cgWindowID: 1,
+            title: "WindowLens",
+            bounds: CGRect(x: 0, y: 0, width: 100, height: 100)
+        )
+        store.recordAccess(identity: windowLensIdentity, appName: "WindowLens", windowTitle: "WindowLens")
+
+        let placeholderIdentity = PreviewIdentity(
+            ownerPID: 2,
+            bundleIdentifier: "com.test.app",
+            cgWindowID: 0,
+            title: "",
+            bounds: .zero,
+            hasReliableCGWindowID: false
+        )
+        store.recordAccess(identity: placeholderIdentity, appName: "App", windowTitle: "")
+
+        XCTAssertEqual(store.recordCountForTesting, 0)
+    }
+
+    @MainActor
+    func testWindowUsageStoreClearAllRemovesPersistence() {
+        let suiteName = "WindowUsageStoreTests.\(UUID().uuidString)"
+        let userDefaults = UserDefaults(suiteName: suiteName)!
+        let key = "test.usage.\(UUID().uuidString)"
+        let store = WindowUsageStore(
+            forTestingWithMaxEntries: 100,
+            persistenceKey: key,
+            userDefaults: userDefaults,
+            loadPersistedData: false
+        )
+        let identity = makeUsagePreviewIdentity(windowID: 501, title: "Clear")
+        store.recordAccess(identity: identity, appName: "App", windowTitle: "Clear")
+        store.persistImmediatelyForTesting()
+        XCTAssertNotNil(userDefaults.data(forKey: key))
+
+        store.clearAll()
+        XCTAssertEqual(store.recordCountForTesting, 0)
+        XCTAssertNil(userDefaults.data(forKey: key))
+    }
+
+    // MARK: - Dead Windows join logic
+
+    func testDeadWindowsBuildLiveLookupSkipsPlaceholders() {
+        let app = makeApp(pid: 100, name: "Safari")
+        let realWindow = WindowModel(
+            windowID: 200,
+            title: "GitHub",
+            ownerPID: app.pid,
+            bundleIdentifier: app.bundleIdentifier
+        )
+        let placeholder = WindowModel(
+            windowID: 0,
+            title: "No Windows",
+            bounds: .zero,
+            isMinimized: false,
+            isOnScreen: false,
+            ownerPID: app.pid,
+            bundleIdentifier: app.bundleIdentifier,
+            hasReliableWindowID: false,
+            subtitle: "No Windows"
+        )
+        var appWithWindows = app
+        appWithWindows.windows = [realWindow, placeholder]
+
+        let lookup = DeadWindowsJoinLogic.buildLiveLookup(from: [appWithWindows])
+
+        XCTAssertEqual(lookup.count, 1)
+        XCTAssertEqual(lookup.values.first?.windowTitle, "GitHub")
+        XCTAssertEqual(lookup.keys.first, realWindow.previewIdentity.stableKey)
+    }
+
+    func testDeadWindowsJoinedRowsExcludesGhosts() {
+        let app = makeApp(pid: 200, name: "Notes")
+        let window = WindowModel(
+            windowID: 300,
+            title: "Draft",
+            ownerPID: app.pid,
+            bundleIdentifier: app.bundleIdentifier
+        )
+        var notesApp = app
+        notesApp.windows = [window]
+
+        let lookup = DeadWindowsJoinLogic.buildLiveLookup(from: [notesApp])
+        let now = Date()
+        let stale: [WindowUsageRecord] = [
+            WindowUsageRecord(
+                surfaceID: window.previewIdentity.stableKey,
+                lastAccessedAt: now.addingTimeInterval(-86_400 * 10),
+                accessCount: 2,
+                lastAppName: "Notes",
+                lastWindowTitle: "Draft",
+                firstSeenAt: now.addingTimeInterval(-86_400 * 30)
+            ),
+            WindowUsageRecord(
+                surfaceID: "ghost-closed-window",
+                lastAccessedAt: now.addingTimeInterval(-86_400 * 10),
+                accessCount: 1,
+                lastAppName: "Closed",
+                lastWindowTitle: "Gone",
+                firstSeenAt: now.addingTimeInterval(-86_400 * 30)
+            )
+        ]
+
+        let rows = DeadWindowsJoinLogic.joinedRows(staleRecords: stale, lookup: lookup, now: now)
+
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].live.windowTitle, "Draft")
+    }
+
+    func testDeadWindowsGroupedSectionsOrdersBuckets() {
+        let app = makeApp(pid: 300, name: "Mail")
+        let oldWindow = WindowModel(
+            windowID: 400,
+            title: "Old",
+            ownerPID: app.pid,
+            bundleIdentifier: app.bundleIdentifier
+        )
+        let olderWindow = WindowModel(
+            windowID: 401,
+            title: "Older",
+            ownerPID: app.pid,
+            bundleIdentifier: app.bundleIdentifier
+        )
+        var mailApp = app
+        mailApp.windows = [oldWindow, olderWindow]
+
+        let lookup = DeadWindowsJoinLogic.buildLiveLookup(from: [mailApp])
+        let now = Date()
+        let stale: [WindowUsageRecord] = [
+            WindowUsageRecord(
+                surfaceID: oldWindow.previewIdentity.stableKey,
+                lastAccessedAt: now.addingTimeInterval(-86_400 * 10),
+                accessCount: 1,
+                lastAppName: "Mail",
+                lastWindowTitle: "Old",
+                firstSeenAt: now.addingTimeInterval(-86_400 * 20)
+            ),
+            WindowUsageRecord(
+                surfaceID: olderWindow.previewIdentity.stableKey,
+                lastAccessedAt: now.addingTimeInterval(-86_400 * 40),
+                accessCount: 1,
+                lastAppName: "Mail",
+                lastWindowTitle: "Older",
+                firstSeenAt: now.addingTimeInterval(-86_400 * 50)
+            )
+        ]
+
+        let rows = DeadWindowsJoinLogic.joinedRows(staleRecords: stale, lookup: lookup, now: now)
+        let sections = DeadWindowsJoinLogic.groupedSections(from: rows)
+
+        XCTAssertEqual(sections.count, 2)
+        XCTAssertEqual(sections[0].0, .oneToTwoWeeks)
+        XCTAssertEqual(sections[1].0, .oneMonthPlus)
+    }
+
+    func testDeadWindowsAgeBucketAssignment() {
+        let now = Date()
+        XCTAssertEqual(
+            DeadWindowsJoinLogic.ageBucket(for: now.addingTimeInterval(-86_400 * 2), now: now),
+            .oneToThreeDays
+        )
+        XCTAssertEqual(
+            DeadWindowsJoinLogic.ageBucket(for: now.addingTimeInterval(-86_400 * 6.9), now: now),
+            .threeToSevenDays
+        )
+        XCTAssertEqual(
+            DeadWindowsJoinLogic.ageBucket(for: now.addingTimeInterval(-86_400 * 30), now: now),
+            .oneMonthPlus
+        )
+    }
+
+    func testDeadWindowThresholdDefaultIsFiveDays() {
+        let key = DeadWindowThreshold.userDefaultsKey
+        let previous = UserDefaults.standard.object(forKey: key)
+        defer {
+            if let previous {
+                UserDefaults.standard.set(previous, forKey: key)
+            } else {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+        }
+
+        UserDefaults.standard.removeObject(forKey: key)
+        XCTAssertEqual(DeadWindowThreshold.loadSaved(), .fiveDays)
+
+        DeadWindowThreshold.threeDays.save()
+        XCTAssertEqual(DeadWindowThreshold.loadSaved(), .threeDays)
     }
 
     func testShortcutPreferencesCodableRoundTrip() throws {
@@ -545,6 +916,74 @@ final class WindowLensTests: XCTestCase {
         XCTAssertEqual(merged.map(\.title), ["Two"])
     }
 
+    func testRefinementKeepsSameTitleDifferentAxIndex() {
+        let windows = [
+            makeFinderWindowInfo(title: "Personal: New Tab", windowID: 100, axIndex: 0),
+            makeFinderWindowInfo(title: "Personal: New Tab", windowID: 200, axIndex: 1)
+        ]
+
+        let refined = WindowEnumerator.refinedWindowsForApplication(
+            windows,
+            bundleIdentifier: "company.thebrowser.dia"
+        )
+
+        XCTAssertEqual(refined.count, 2)
+    }
+
+    func testMergedWindowsPreservingPreviewsDoesNotMergeByTitleAloneWhenAxIndexDiffers() {
+        let pid: pid_t = 10_004
+        let image = NSImage(size: NSSize(width: 12, height: 12))
+        let existing = [
+            WindowModel(
+                windowID: 1,
+                title: "Personal: New Tab",
+                ownerPID: pid,
+                axIndex: 0,
+                previewImage: image
+            ),
+            WindowModel(
+                windowID: 2,
+                title: "Personal: New Tab",
+                ownerPID: pid,
+                axIndex: 1,
+                previewImage: nil
+            )
+        ]
+        let fresh = [
+            WindowModel(windowID: 1, title: "Personal: New Tab", ownerPID: pid, axIndex: 0, previewImage: nil),
+            WindowModel(windowID: 2, title: "Personal: New Tab", ownerPID: pid, axIndex: 1, previewImage: nil)
+        ]
+
+        let merged = WindowModel.mergedPreservingPreviews(fresh: fresh, existing: existing)
+
+        XCTAssertTrue(merged[0].previewImage === image)
+        XCTAssertNil(merged[1].previewImage)
+    }
+
+    func testPreviewIdentityDoesNotMatchSameTitleDifferentAxIndex() {
+        let pid: pid_t = 12_345
+        let lhs = PreviewIdentity(
+            ownerPID: pid,
+            bundleIdentifier: "company.thebrowser.dia",
+            cgWindowID: 1,
+            axIndex: 0,
+            title: "Personal: New Tab",
+            bounds: CGRect(x: 40, y: 40, width: 900, height: 700),
+            hasReliableCGWindowID: false
+        )
+        let rhs = PreviewIdentity(
+            ownerPID: pid,
+            bundleIdentifier: "company.thebrowser.dia",
+            cgWindowID: 2,
+            axIndex: 1,
+            title: "Personal: New Tab",
+            bounds: CGRect(x: 60, y: 40, width: 900, height: 700),
+            hasReliableCGWindowID: false
+        )
+
+        XCTAssertFalse(lhs.matches(rhs))
+    }
+
     // MARK: - Helpers
 
     private func makeApp(name: String) -> ApplicationModel {
@@ -606,6 +1045,22 @@ final class WindowLensTests: XCTestCase {
             bundleIdentifier: "com.test.\(name.lowercased())",
             name: name,
             icon: NSImage()
+        )
+    }
+
+    private func makeUsagePreviewIdentity(
+        windowID: CGWindowID,
+        title: String,
+        bundleIdentifier: String = "com.apple.Safari",
+        ownerPID: pid_t = 12_345
+    ) -> PreviewIdentity {
+        PreviewIdentity(
+            ownerPID: ownerPID,
+            bundleIdentifier: bundleIdentifier,
+            cgWindowID: windowID,
+            title: title,
+            bounds: CGRect(x: 40, y: 40, width: 800, height: 600),
+            hasReliableCGWindowID: true
         )
     }
 }

@@ -1,6 +1,31 @@
 import AppKit
 import SwiftUI
 
+/// Frosted panel matching the Settings window — `.thinMaterial` blur with a light dim overlay.
+struct FrostedPanelBackground: View {
+    var cornerRadius: CGFloat = 14
+    var dimOpacity: CGFloat = 0.09
+    var strokeOpacity: CGFloat = 0.14
+    var strokeWidth: CGFloat = 0.5
+    var shadowOpacity: CGFloat = 0.14
+    var shadowRadius: CGFloat = 14
+    var shadowYOffset: CGFloat = 8
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(.thinMaterial)
+
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(Color.black.opacity(dimOpacity))
+
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .strokeBorder(Color.white.opacity(strokeOpacity), lineWidth: strokeWidth)
+        }
+        .shadow(color: .black.opacity(shadowOpacity), radius: shadowRadius, x: 0, y: shadowYOffset)
+    }
+}
+
 /// Native AppKit material surface for compositor-style overlays.
 struct GlassBackground: View {
     enum NativeStyle {

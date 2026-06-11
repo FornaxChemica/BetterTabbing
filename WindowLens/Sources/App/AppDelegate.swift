@@ -7,6 +7,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var eventTap: KeyboardEventTap?
     private var panelManager: SwitcherPanelManager { SwitcherPanelManager.shared }
     private var settingsWindow: NSWindow?
+    private var heatmapWindow: NSWindow?
+    private var deadWindowsWindow: NSWindow?
     private var suppressSettingsOnNextActivation = false
     private var cancellables = Set<AnyCancellable>()
     private var workspaceObserverTokens: [NSObjectProtocol] = []
@@ -14,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var isNativeCommandTabSessionActive = false
     private var nativeFallbackWorkItem: DispatchWorkItem?
     private var nativeWindowSelectionWasAdjusted = false
+    private var lastNativePreviewRefreshPID: pid_t?
     private var lastWorkspaceWindowIndexByPID: [pid_t: Int] = [:]
     private var hasStartedWindowCache = false
     private var onboardingWindow: NSWindow?
@@ -321,6 +324,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             permissionReadyWindow = nil
         } else if window === settingsWindow {
             settingsWindow = nil
+        } else if window === heatmapWindow {
+            heatmapWindow = nil
+        } else if window === deadWindowsWindow {
+            deadWindowsWindow = nil
         }
     }
 
@@ -425,6 +432,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             .store(in: &cancellables)
 
+        NotificationCenter.default.publisher(for: .workspaceSearchKeyboardCaptureEnabled)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.eventTap?.setSearchModeActive(true)
+                }
+            }
+            .store(in: &cancellables)
+
+        Publishers.CombineLatest3(
+            AppState.shared.$isSearchActive,
+            AppState.shared.$searchQuery,
+            AppState.shared.$workspaceMode
+        )
+        .map { isActive, query, workspaceMode in
+            workspaceMode == .globalWindowSearch
+                || (isActive && !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .removeDuplicates()
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] isSearchingWithQuery in
+            MainActor.assumeIsolated {
+                self?.eventTap?.setSearchingWithQuery(isSearchingWithQuery)
+            }
+        }
+        .store(in: &cancellables)
+
         NotificationCenter.default.publisher(for: .workspaceActiveApplicationDidReconcile)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
@@ -444,6 +478,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         applications: applications,
                         activePID: pid
                     )
+
+                    if AppState.shared.isVisible,
+                       AppState.shared.presentationMode == .workspace,
+                       AppState.shared.workspaceMode == .currentAppWindows {
+                        self.panelManager.showCurrentAppWindowSwitcher()
+                    }
                 }
             }
             .store(in: &cancellables)
@@ -468,6 +508,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .sink { [weak self] _ in
                 MainActor.assumeIsolated {
                     self?.showSettingsWindow()
+                }
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: .openHeatmap)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.showHeatmapWindow()
+                }
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: .openDeadWindows)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.showDeadWindowsWindow()
                 }
             }
             .store(in: &cancellables)
@@ -587,6 +645,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         print("[WindowLens] Settings window shown")
     }
 
+    private func showHeatmapWindow() {
+        guard UserPreferences.load().modules.usageHeatmapEnabled else { return }
+
+        if heatmapWindow == nil {
+            heatmapWindow = NSApp.windows.first { $0.identifier == HeatmapWindowConfigurator.windowIdentifier }
+        }
+
+        if let window = heatmapWindow {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let hostingController = NSHostingController(
+            rootView: HeatmapView()
+                .environmentObject(AppState.shared)
+        )
+        let window = NSWindow(contentViewController: hostingController)
+        HeatmapWindowConfigurator.configure(window)
+        window.setContentSize(NSSize(width: 900, height: 560))
+        window.center()
+        window.delegate = self
+
+        heatmapWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        print("[WindowLens] Heatmap window shown")
+    }
+
+    private func showDeadWindowsWindow() {
+        if deadWindowsWindow == nil {
+            deadWindowsWindow = NSApp.windows.first { $0.identifier == DeadWindowsWindowConfigurator.windowIdentifier }
+        }
+
+        if let window = deadWindowsWindow {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let hostingController = NSHostingController(rootView: DeadWindowsView())
+        let window = NSWindow(contentViewController: hostingController)
+        DeadWindowsWindowConfigurator.configure(window)
+        window.setContentSize(NSSize(width: 800, height: 560))
+        window.center()
+        window.delegate = self
+
+        deadWindowsWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        print("[WindowLens] Unused Windows window shown")
+    }
+
     private func findExistingSettingsWindow() -> NSWindow? {
         NSApp.windows.first { $0.identifier == SettingsWindowConfigurator.windowIdentifier }
     }
@@ -661,6 +772,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard UserPreferences.load().modules.resourceMonitorEnabled else { return }
             AppState.shared.cancelEHold(triggeredAI: false)
             AppState.shared.toggleResourceMonitor()
+        case .toggleUnusedWindows:
+            AppState.shared.toggleUnusedWindows()
+        case .toggleHeatmap:
+            guard UserPreferences.load().modules.usageHeatmapEnabled else { return }
+            AppState.shared.toggleHeatmap()
         case .eHoldStarted:
             guard UserPreferences.load().modules.resourceMonitorEnabled else { return }
             AppState.shared.startEHold()
@@ -697,6 +813,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             let outcome = WindowNumberRegistry.shared.activate(slot: slot)
             WindowSlotHUD.shared.present(outcome: outcome)
+        case .openUsageHeatmap:
+            guard UserPreferences.load().modules.usageHeatmapEnabled else { return }
+            showHeatmapWindow()
         }
     }
 
@@ -716,7 +835,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func startWorkspaceWindowSession(showImmediately: Bool) {
         var snapshot = hydratingWorkspaceSnapshot(
-            WindowCache.shared.getApplicationsForWorkspaceSwitching()
+            WindowCache.shared.getApplicationsForWorkspaceSwitching(forceRefresh: true)
         )
         let frontmost = frontmostApplicationForWorkspace()
         if let frontmost,
@@ -738,16 +857,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             initialWindowIndex: initialWindowIndex
         )
 
-        if let selectedApp = AppState.shared.selectedApp {
-            requestSelectedNativeAppPreviews(selectedApp)
-        }
-
         WindowCache.shared.prefetchAsync {
             guard AppState.shared.isVisible,
                   AppState.shared.presentationMode == .workspace else {
                 return
             }
-            AppState.shared.refreshWorkspaceWindowsForSelectedApp(forceRefresh: false)
+            AppState.shared.refreshWorkspaceWindowsForSelectedApp(forceRefresh: true)
         }
 
         guard showImmediately else { return }
@@ -959,6 +1074,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func startNativeCommandTabSession(reverse: Bool) {
         isNativeCommandTabSessionActive = true
         nativeWindowSelectionWasAdjusted = false
+        lastNativePreviewRefreshPID = nil
         nativeFallbackWorkItem?.cancel()
         nativeFallbackWorkItem = nil
 
@@ -1033,7 +1149,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func requestSelectedNativeAppPreviews(_ app: ApplicationModel) {
-        guard !app.windows.isEmpty else { return }
+        if lastNativePreviewRefreshPID != app.pid {
+            lastNativePreviewRefreshPID = app.pid
+            AppState.shared.refreshNativeWindowsForSelectedApp()
+        }
         AppState.shared.hydrateCachedPreviews(for: app.pid)
 
         guard let hydratedApp = AppState.shared.applications.first(where: { $0.pid == app.pid }),

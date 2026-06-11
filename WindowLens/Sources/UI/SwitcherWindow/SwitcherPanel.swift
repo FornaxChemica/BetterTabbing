@@ -20,6 +20,7 @@ final class SwitcherPanel: NSPanel {
 
     /// The screen this panel is associated with (for multi-screen support)
     private(set) var associatedScreen: NSScreen?
+    private var pendingRecenterWorkItem: DispatchWorkItem?
 
     init(screen: NSScreen? = nil) {
         self.associatedScreen = screen
@@ -121,8 +122,36 @@ final class SwitcherPanel: NSPanel {
             }
             .store(in: &cancellables)
 
+        // Re-size when the live window list changes (e.g. user closed windows while switcher is open).
+        AppState.shared.$applications
+            .dropFirst()
+            .debounce(for: .milliseconds(50), scheduler: DispatchQueue.main)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard AppState.shared.presentationMode == .workspace,
+                      AppState.shared.workspaceMode == .currentAppWindows else { return }
+                self?.resizeForWindowList()
+            }
+            .store(in: &cancellables)
+
         // Observe resource monitor toggle to re-center panel
         AppState.shared.$isResourceMonitorActive
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.recenterIfVisible()
+            }
+            .store(in: &cancellables)
+
+        AppState.shared.$isUnusedWindowsActive
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.recenterIfVisible()
+            }
+            .store(in: &cancellables)
+
+        AppState.shared.$isHeatmapActive
             .dropFirst()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
@@ -140,7 +169,7 @@ final class SwitcherPanel: NSPanel {
         let searchQuery = appState.searchQuery
 
         if appState.presentationMode == .nativePreview {
-            let windowCount = appState.selectedApp?.windows.count ?? 1
+            let windowCount = appState.selectedApp?.openWindowCount ?? 1
             return CGSize(
                 width: nativePreviewWidth(for: windowCount, on: associatedScreen ?? NSScreen.main),
                 height: 424
@@ -149,28 +178,59 @@ final class SwitcherPanel: NSPanel {
 
         if appState.presentationMode == .workspace,
            appState.workspaceMode == .currentAppWindows {
-            let windowCount = appState.selectedApp?.windows.count ?? 1
-            return CGSize(
-                width: nativePreviewWidth(for: windowCount, on: associatedScreen ?? NSScreen.main),
-                height: 448
-            )
+            let width: CGFloat
+            if appState.isUnusedWindowsActive {
+                width = 640
+            } else if appState.isHeatmapActive {
+                width = 920
+            } else if appState.isResourceMonitorActive {
+                width = 680
+            } else {
+                let windowCount = appState.selectedApp?.openWindowCount ?? 1
+                width = nativePreviewWidth(for: windowCount, on: associatedScreen ?? NSScreen.main)
+            }
+
+            let height: CGFloat
+            if appState.isUnusedWindowsActive {
+                height = 500
+            } else if appState.isHeatmapActive {
+                height = 560
+            } else if appState.isResourceMonitorActive {
+                let entryCount = min(appState.resourceEntries.count, 15)
+                let chartHeight: CGFloat = 110
+                let entriesHeight = entryCount == 0 ? 80 : CGFloat(entryCount) * 30 + 24
+                let hintsHeight: CGFloat = 30
+                height = chartHeight + entriesHeight + hintsHeight + 120
+            } else {
+                height = 536
+            }
+
+            return CGSize(width: width, height: height)
         }
 
         if appState.presentationMode == .workspace,
            appState.workspaceMode == .globalWindowSearch {
-            return CGSize(width: 1040, height: 430)
+            // Extra height for the Settings-style frosted shell padding.
+            return CGSize(width: 1040, height: 508)
         }
 
         // Check if showing search results
         let showSearchResults = isSearchActive && !searchQuery.isEmpty
 
         // The normal switcher keeps preview geometry reserved even while placeholders are shown.
-        let showsPreviewStage = !showSearchResults && !appState.isResourceMonitorActive
+        let showsPreviewStage = !showSearchResults
+            && !appState.isResourceMonitorActive
+            && !appState.isUnusedWindowsActive
+            && !appState.isHeatmapActive
 
         // Width calculation
         let width: CGFloat
         if showSearchResults {
             width = 1040
+        } else if appState.isUnusedWindowsActive {
+            width = 640
+        } else if appState.isHeatmapActive {
+            width = 920
         } else if appState.isResourceMonitorActive {
             width = 680
         } else {
@@ -187,6 +247,10 @@ final class SwitcherPanel: NSPanel {
             let resultCount = min(appState.searchResults.count, 10)
             let resultsHeight = resultCount == 0 ? 80 : CGFloat(resultCount) * 44 + 24
             contentHeight = max(416, resultsHeight + 80)
+        } else if appState.isUnusedWindowsActive {
+            contentHeight = 460
+        } else if appState.isHeatmapActive {
+            contentHeight = 520
         } else if appState.isResourceMonitorActive {
             // Resource monitor: bar chart (~100) + header (~20) + entries + hints + padding
             let entryCount = min(appState.resourceEntries.count, 15)
@@ -273,6 +337,15 @@ final class SwitcherPanel: NSPanel {
     }
 
     private func recenterIfVisible() {
+        pendingRecenterWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.commitRecenterIfVisible()
+        }
+        pendingRecenterWorkItem = workItem
+        DispatchQueue.main.async(execute: workItem)
+    }
+
+    private func commitRecenterIfVisible() {
         guard isVisible, let screen = associatedScreen ?? NSScreen.main ?? NSScreen.screens.first else { return }
 
         // Get the intrinsic size from SwiftUI content
@@ -306,24 +379,18 @@ final class SwitcherPanel: NSPanel {
 
         let newFrame = CGRect(origin: origin, size: panelSize)
         let expectedNativeGeneration = presentationMode == .nativePreview ? AppState.shared.nativeSelectionGeneration : nil
+        guard canCommitLayout(expectedNativeGeneration: expectedNativeGeneration) else { return }
 
-        // Defer frame change to next run loop iteration to avoid constraint conflicts
-        // during the current layout cycle
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self, self.isVisible else { return }
-            guard self.canCommitLayout(expectedNativeGeneration: expectedNativeGeneration) else { return }
+        if presentationMode == .nativePreview {
+            setFrame(newFrame, display: true)
+            return
+        }
 
-            if self.presentationMode == .nativePreview {
-                self.setFrame(newFrame, display: true)
-                return
-            }
-
-            // Animate the frame change for search bar
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.15
-                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                self.animator().setFrame(newFrame, display: true)
-            }
+        // Animate the frame change for search bar
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.15
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            self.animator().setFrame(newFrame, display: true)
         }
     }
 
@@ -794,15 +861,9 @@ final class SwitcherPanel: NSPanel {
             AppState.shared.pinWorkspaceSearch()
             SwitcherPanelManager.shared.activateSearch()
             return true
-        case kVK_ANSI_1 where isCommandPressed:
-            AppState.shared.setWorkspaceSearchScope(.currentApp)
-            return true
-        case kVK_ANSI_2 where isCommandPressed:
-            AppState.shared.setWorkspaceSearchScope(.allWindows)
-            return true
         case kVK_Tab:
-            if AppState.shared.isSearchActive && !AppState.shared.searchQuery.isEmpty {
-                isShiftPressed ? AppState.shared.selectPreviousApp() : AppState.shared.selectNextApp()
+            if AppState.shared.isSearchingWithQuery {
+                isShiftPressed ? AppState.shared.selectPreviousWindow() : AppState.shared.selectNextWindow()
             } else if AppState.shared.workspaceMode == .currentAppWindows {
                 isShiftPressed ? AppState.shared.selectPreviousWindow() : AppState.shared.selectNextWindow()
             } else {
@@ -810,28 +871,32 @@ final class SwitcherPanel: NSPanel {
             }
             return true
         case kVK_LeftArrow:
-            if AppState.shared.workspaceMode == .currentAppWindows {
+            if AppState.shared.isSearchingWithQuery {
+                AppState.shared.selectPreviousApp()
+            } else if AppState.shared.workspaceMode == .currentAppWindows {
                 AppState.shared.selectPreviousWindow()
             } else {
                 AppState.shared.selectPreviousApp()
             }
             return true
         case kVK_RightArrow:
-            if AppState.shared.workspaceMode == .currentAppWindows {
+            if AppState.shared.isSearchingWithQuery {
+                AppState.shared.selectNextApp()
+            } else if AppState.shared.workspaceMode == .currentAppWindows {
                 AppState.shared.selectNextWindow()
             } else {
                 AppState.shared.selectNextApp()
             }
             return true
         case kVK_UpArrow:
-            if AppState.shared.isSearchActive && !AppState.shared.searchQuery.isEmpty {
+            if AppState.shared.isSearchingWithQuery || AppState.shared.workspaceMode == .globalWindowSearch {
                 AppState.shared.selectPreviousApp()
             } else {
                 AppState.shared.selectPreviousWindow()
             }
             return true
         case kVK_DownArrow:
-            if AppState.shared.isSearchActive && !AppState.shared.searchQuery.isEmpty {
+            if AppState.shared.isSearchingWithQuery || AppState.shared.workspaceMode == .globalWindowSearch {
                 AppState.shared.selectNextApp()
             } else {
                 AppState.shared.selectNextWindow()

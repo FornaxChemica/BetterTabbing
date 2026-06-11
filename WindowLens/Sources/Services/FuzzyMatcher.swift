@@ -106,47 +106,14 @@ enum FuzzyMatcher {
                 }
             }
 
-            // Also try matching against combined "appname - windowtitle" strings
-            // This handles queries like "safari facebook" or "chrome gmail"
-            // Only show individual windows if app has multiple windows (avoids duplicates)
-            if app.windows.count > 1 {
-                for (windowIndex, window) in app.windows.enumerated() {
-                    let combinedText = "\(appNameLower) - \(window.title.lowercased())"
-                    let windowTitleOnly = window.title.lowercased()
-
-                    // Try matching the combined string
-                    if let (score, _) = fuzzyMatch(combinedText, pattern: lowercaseQuery) {
-                        let finalScore = score + 150
-
-                        // Only add if we haven't already added this window (from app match above)
-                        let windowId = "window-\(app.pid)-\(window.windowID)"
-                        if !results.contains(where: { $0.id == windowId }) {
-                            results.append(SearchResult(
-                                id: windowId,
-                                app: app,
-                                targetWindowIndex: windowIndex,
-                                matchedText: window.title,
-                                score: finalScore
-                            ))
-                        }
-                    }
-                    // Also try matching window title alone
-                    else if let (score, _) = fuzzyMatch(windowTitleOnly, pattern: lowercaseQuery) {
-                        let finalScore = score + 140
-
-                        let windowId = "window-\(app.pid)-\(window.windowID)"
-                        if !results.contains(where: { $0.id == windowId }) {
-                            results.append(SearchResult(
-                                id: windowId,
-                                app: app,
-                                targetWindowIndex: windowIndex,
-                                matchedText: window.title,
-                                score: finalScore
-                            ))
-                        }
-                    }
-                }
-            }
+            // Match window titles (single- or multi-window apps).
+            appendWindowTitleMatches(
+                for: app,
+                appNameLower: appNameLower,
+                query: lowercaseQuery,
+                into: &results,
+                skipWhenAppNameMatched: appScore != nil
+            )
 
             // Score browser tabs with combined matching
             if let tabs = app.browserTabs {
@@ -244,6 +211,47 @@ enum FuzzyMatcher {
 
         // Sort by score descending
         return results.sorted { $0.score > $1.score }
+    }
+
+    private static func appendWindowTitleMatches(
+        for app: ApplicationModel,
+        appNameLower: String,
+        query: String,
+        into results: inout [SearchResult],
+        skipWhenAppNameMatched: Bool
+    ) {
+        for (windowIndex, window) in app.windows.enumerated() {
+            let combinedText = "\(appNameLower) - \(window.title.lowercased())"
+            let windowTitleOnly = window.title.lowercased()
+            let windowId = "window-\(app.pid)-\(window.windowID)"
+
+            if results.contains(where: { $0.id == windowId }) {
+                continue
+            }
+
+            if let (score, _) = fuzzyMatch(combinedText, pattern: query) {
+                results.append(SearchResult(
+                    id: windowId,
+                    app: app,
+                    targetWindowIndex: windowIndex,
+                    matchedText: window.title,
+                    score: score + 150
+                ))
+            } else if let (score, _) = fuzzyMatch(windowTitleOnly, pattern: query) {
+                let titleScore = score + 140
+                // Single-window apps: window title is the primary match (e.g. "Goldfish" in Messages).
+                // Multi-window: skip title-only when the app name already matched (avoid duplicate rows).
+                if app.windows.count == 1 || !skipWhenAppNameMatched {
+                    results.append(SearchResult(
+                        id: windowId,
+                        app: app,
+                        targetWindowIndex: windowIndex,
+                        matchedText: window.title,
+                        score: titleScore
+                    ))
+                }
+            }
+        }
     }
 
     /// Legacy filter function for compatibility - returns applications only

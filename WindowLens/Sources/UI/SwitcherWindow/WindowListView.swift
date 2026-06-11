@@ -28,80 +28,31 @@ struct WindowListView: View {
         return window.previewIdentity.surfaceID
     }
 
+    /// Real open-window count for global-search carousel layout (stable when bounds/titles change).
+    private var previewLayoutWindowCount: Int {
+        app.openWindowCount
+    }
+
+    private var carouselSpacing: CGFloat {
+        if isSearchResultsPreviewPane, previewLayoutWindowCount >= 2, previewLayoutWindowCount <= 3 {
+            return 14
+        }
+        return app.openWindowCount >= 2 ? 18 : 0
+    }
+
     var body: some View {
         GeometryReader { geometry in
-            ScrollViewReader { proxy in
-                let maximumPreviewWidth = maximumPreviewWidth(containerWidth: geometry.size.width)
-
-                ScrollView(.horizontal, showsIndicators: false) {
-                    liquidGlassGroup {
-                        HStack(alignment: .center, spacing: app.hasMultipleWindows ? 18 : 0) {
-                            ForEach(surfaceItems) { item in
-                                WindowPreviewSurfaceView(
-                                    window: item.window,
-                                    appName: app.name,
-                                    appIcon: app.icon,
-                                    isSelected: item.index == selectedWindowIndex,
-                                    distanceFromSelection: abs(item.index - selectedWindowIndex),
-                                    presentationMode: presentationMode,
-                                    maximumPreviewWidth: maximumPreviewWidth,
-                                    onHover: { isHovering in
-                                        if isHovering {
-                                            onWindowHovered?(item.index)
-                                        }
-                                    }
-                                )
-                                .contextMenu {
-                                    ForEach(1...9, id: \.self) { slot in
-                                        Button {
-                                            slotRegistry.reassign(
-                                                slot: slot,
-                                                to: item.window.windowID,
-                                                pid: app.pid,
-                                                appName: app.name,
-                                                windowTitle: item.window.title,
-                                                bundleIdentifier: app.bundleIdentifier
-                                            )
-                                        } label: {
-                                            slotAssignmentMenuLabel(
-                                                slot: slot,
-                                                currentWindowID: item.window.windowID
-                                            )
-                                        }
-                                    }
-                                }
-                                .onTapGesture {
-                                    onWindowClicked?(item.index)
-                                }
-                                .zIndex(item.index == selectedWindowIndex ? 10 : Double(5 - abs(item.index - selectedWindowIndex)))
-                            }
-                        }
-                        .frame(
-                            minWidth: geometry.size.width,
-                            alignment: shouldCenterWindowCarousel ? .center : (app.hasMultipleWindows ? .leading : .center)
-                        )
-                        .padding(.horizontal, app.hasMultipleWindows ? 22 : 0)
-                        .padding(.vertical, 18)
-                    }
-                }
-                .mask(scrollMask)
-                .onAppear {
-                    guard app.hasMultipleWindows,
-                          surfaceItems.indices.contains(selectedWindowIndex) else { return }
-                    DispatchQueue.main.async {
-                        proxy.scrollTo(surfaceItems[selectedWindowIndex].id, anchor: .center)
-                    }
-                }
-                .onChange(of: selectedWindowIndex) { oldValue, newValue in
-                    guard surfaceItems.indices.contains(newValue) else { return }
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        proxy.scrollTo(surfaceItems[newValue].id, anchor: .center)
-                    }
-                }
+            if usesCenteredNonScrollingCarousel {
+                centeredCarousel(in: geometry)
+            } else {
+                scrollingCarousel(in: geometry)
             }
         }
         .frame(height: presentationMode == .nativePreview ? 348 : 372)
         .onAppear {
+            if isCurrentAppWorkspaceCarousel {
+                appState.refreshWorkspaceWindowsForSelectedApp()
+            }
             requestMissingPreviews()
         }
         .onChange(of: app.id) { oldValue, newValue in
@@ -112,13 +63,15 @@ struct WindowListView: View {
             requestMissingPreviews()
         }
         .onChange(of: app.windows.map(\.title)) { oldValue, newValue in
+            guard presentationMode != .nativePreview else { return }
             requestMissingPreviews()
         }
         .onChange(of: app.windows.map(\.bounds)) { oldValue, newValue in
+            guard presentationMode != .nativePreview else { return }
             requestMissingPreviews()
         }
         .onChange(of: selectedWindowIndex) { oldValue, newValue in
-            requestMissingPreviews()
+            requestMissingPreviews(nearSelectionOnly: true)
         }
         .onReceive(NotificationCenter.default.publisher(for: .windowPreviewDidLoad)) { notification in
             guard let update = notification.object as? WindowPreviewUpdate else {
@@ -140,16 +93,185 @@ struct WindowListView: View {
         presentationMode == .workspace && appState.workspaceMode == .currentAppWindows
     }
 
-    private var usesAdaptiveWindowCarousel: Bool {
-        isNativePreviewCarousel || isCurrentAppWorkspaceCarousel
+    private var isGlobalWindowSearchCarousel: Bool {
+        presentationMode == .workspace && appState.workspaceMode == .globalWindowSearch
     }
 
-    private var shouldCenterWindowCarousel: Bool {
-        usesAdaptiveWindowCarousel && surfaceItems.count <= 3
+    private var isSearchResultsPreviewPane: Bool {
+        presentationMode == .workspace && appState.workspaceMode == .globalWindowSearch
+    }
+
+    private var usesAdaptiveWindowCarousel: Bool {
+        isNativePreviewCarousel || isCurrentAppWorkspaceCarousel || isGlobalWindowSearchCarousel
+    }
+
+    /// Room for selected-card scale/offset so ScrollView does not clip metadata or corners.
+    private var horizontalOverflowPadding: CGFloat {
+        if isSearchResultsPreviewPane {
+            switch previewLayoutWindowCount {
+            case 1: return 28
+            case 2: return 40
+            case 3: return 36
+            default: return 44
+            }
+        }
+        if usesCenteredNonScrollingCarousel {
+            return 0
+        }
+        return presentationMode == .workspace ? 40 : 0
+    }
+
+    /// Up to 3 windows: centered HStack without ScrollView (matches Cmd+Tab preview — no edge clipping).
+    private var usesCenteredNonScrollingCarousel: Bool {
+        if isSearchResultsPreviewPane {
+            return false
+        }
+        return shouldUseCenteredHStackLayout
+    }
+
+    @ViewBuilder
+    private func centeredCarousel(in geometry: GeometryProxy) -> some View {
+        liquidGlassGroup {
+            HStack(spacing: carouselSpacing) {
+                Spacer(minLength: 0)
+                carouselItems(in: geometry)
+                Spacer(minLength: 0)
+            }
+            .frame(width: geometry.size.width)
+            .padding(.horizontal, app.openWindowCount >= 2 ? 22 : 0)
+            .padding(.vertical, 18)
+        }
+    }
+
+    @ViewBuilder
+    private func scrollingCarousel(in geometry: GeometryProxy) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                liquidGlassGroup {
+                    HStack(alignment: .center, spacing: carouselSpacing) {
+                        carouselItems(in: geometry)
+                    }
+                    .frame(
+                        minWidth: geometry.size.width,
+                        alignment: shouldUseCenteredHStackLayout ? .center : (app.openWindowCount >= 2 ? .leading : .center)
+                    )
+                    .padding(.horizontal, app.openWindowCount >= 2 ? 22 : 0)
+                    .padding(.vertical, 18)
+                }
+            }
+            .contentMargins(.horizontal, horizontalOverflowPadding, for: .scrollContent)
+            .scrollClipDisabled()
+            .mask(scrollMask)
+            .onAppear {
+                centerCarouselSelection(with: proxy, animated: false)
+            }
+            .onChange(of: geometry.size.width) { _, _ in
+                centerCarouselSelection(with: proxy, animated: false)
+            }
+            .onChange(of: selectedWindowIndex) { _, _ in
+                centerCarouselSelection(
+                    with: proxy,
+                    animated: shouldAnimateCarouselScroll
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func carouselItems(in geometry: GeometryProxy) -> some View {
+        ForEach(surfaceItems) { item in
+            let isSelected = item.index == selectedWindowIndex
+            let distance = abs(item.index - selectedWindowIndex)
+            WindowPreviewSurfaceView(
+                window: item.window,
+                appName: app.name,
+                appIcon: app.icon,
+                isSelected: isSelected,
+                distanceFromSelection: distance,
+                presentationMode: presentationMode,
+                maximumPreviewWidth: maximumPreviewWidth(
+                    containerWidth: geometry.size.width,
+                    isSelected: isSelected,
+                    distanceFromSelection: distance
+                ),
+                globalSearchWindowCount: isSearchResultsPreviewPane ? previewLayoutWindowCount : nil,
+                onHover: { isHovering in
+                    if isHovering {
+                        onWindowHovered?(item.index)
+                    }
+                }
+            )
+            .contextMenu {
+                ForEach(1...9, id: \.self) { slot in
+                    Button {
+                        slotRegistry.reassign(
+                            slot: slot,
+                            to: item.window.windowID,
+                            pid: app.pid,
+                            appName: app.name,
+                            windowTitle: item.window.title,
+                            bundleIdentifier: app.bundleIdentifier
+                        )
+                    } label: {
+                        slotAssignmentMenuLabel(
+                            slot: slot,
+                            currentWindowID: item.window.windowID
+                        )
+                    }
+                }
+            }
+            .onTapGesture {
+                onWindowClicked?(item.index)
+            }
+            .zIndex(item.index == selectedWindowIndex ? 10 : Double(5 - abs(item.index - selectedWindowIndex)))
+            .id(item.id)
+        }
+    }
+
+    private func centerCarouselSelection(with proxy: ScrollViewProxy, animated: Bool) {
+        guard shouldScrollToSelection,
+              surfaceItems.indices.contains(selectedWindowIndex) else {
+            return
+        }
+
+        let targetID = surfaceItems[selectedWindowIndex].id
+
+        guard animated else {
+            DispatchQueue.main.async {
+                proxy.scrollTo(targetID, anchor: .center)
+            }
+            return
+        }
+
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+            proxy.scrollTo(targetID, anchor: .center)
+        }
+    }
+
+    /// Centers the HStack content when all cards fit without horizontal scrolling.
+    private var shouldUseCenteredHStackLayout: Bool {
+        if isSearchResultsPreviewPane {
+            return previewLayoutWindowCount <= 3
+        }
+        guard usesAdaptiveWindowCarousel, surfaceItems.count <= 3 else { return false }
+        return true
+    }
+
+    private var shouldScrollToSelection: Bool {
+        !usesCenteredNonScrollingCarousel
+    }
+
+    private var shouldAnimateCarouselScroll: Bool {
+        presentationMode != .nativePreview
+            && (isSearchResultsPreviewPane || isCurrentAppWorkspaceCarousel)
     }
 
     private var usesPeekMask: Bool {
-        usesAdaptiveWindowCarousel && app.windows.count >= 4
+        guard usesAdaptiveWindowCarousel else { return false }
+        if isSearchResultsPreviewPane {
+            return previewLayoutWindowCount >= 4
+        }
+        return previewLayoutWindowCount >= 4
     }
 
     private var scrollMask: some View {
@@ -183,7 +305,7 @@ struct WindowListView: View {
     @ViewBuilder
     private func liquidGlassGroup<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         if #available(macOS 26.0, *), presentationMode == .nativePreview {
-            GlassEffectContainer(spacing: app.hasMultipleWindows ? 18 : 0) {
+            GlassEffectContainer(spacing: app.openWindowCount >= 2 ? 18 : 0) {
                 content()
             }
         } else {
@@ -204,13 +326,27 @@ struct WindowListView: View {
         }
     }
 
-    private func maximumPreviewWidth(containerWidth: CGFloat) -> CGFloat? {
+    private func maximumPreviewWidth(
+        containerWidth: CGFloat,
+        isSelected: Bool,
+        distanceFromSelection: Int
+    ) -> CGFloat? {
         guard usesAdaptiveWindowCarousel else { return nil }
 
         let count = max(surfaceItems.count, 1)
+
+        if isSearchResultsPreviewPane {
+            return globalSearchMaximumPreviewWidth(
+                containerWidth: containerWidth,
+                windowCount: previewLayoutWindowCount,
+                isSelected: isSelected,
+                distanceFromSelection: distanceFromSelection
+            )
+        }
+
         if count >= 2 && count <= 3 {
             let spacing = CGFloat(count - 1) * 18
-            let listPadding: CGFloat = app.hasMultipleWindows ? 44 : 0
+            let listPadding: CGFloat = app.openWindowCount >= 2 ? 44 : 0
             let surfacePadding = CGFloat(count) * 28
             let available = containerWidth - spacing - listPadding - surfacePadding
             return min(410, max(150, floor(available / CGFloat(count))))
@@ -223,12 +359,51 @@ struct WindowListView: View {
         return nil
     }
 
-    private func requestMissingPreviews() {
-        let windowsNeedingPreview = app.windows.filter { window in
-            !window.isWindowlessPlaceholder
-                && !WindowEnumerator.shouldSuppressFinderPreview(for: window)
-                && window.previewImage == nil
-                && window.canCapturePreview
+    /// Option+Tab global search preview pane — hero sizing for 3, balanced pair for 2, full width for 1.
+    private func globalSearchMaximumPreviewWidth(
+        containerWidth: CGFloat,
+        windowCount: Int,
+        isSelected: Bool,
+        distanceFromSelection: Int
+    ) -> CGFloat {
+        let horizontalInset = (app.openWindowCount >= 2 ? 22 : 0) + horizontalOverflowPadding
+        let available = max(containerWidth - horizontalInset * 2, 200)
+        let cardChrome: CGFloat = 28
+
+        switch windowCount {
+        case 1:
+            return min(460, max(300, available - cardChrome * 2))
+        case 2:
+            let slot = (available - carouselSpacing - cardChrome * 2) / 2
+            return min(360, max(260, floor(slot)))
+        case 3:
+            if isSelected {
+                return min(400, max(300, floor(available * 0.58)))
+            }
+            return min(220, max(168, floor(available * 0.24)))
+        default:
+            return 410
+        }
+    }
+
+    private func requestMissingPreviews(nearSelectionOnly: Bool = false) {
+        let candidateIndices: [Int]
+        if nearSelectionOnly {
+            let neighbors = [selectedWindowIndex - 1, selectedWindowIndex, selectedWindowIndex + 1]
+            candidateIndices = neighbors.filter { app.windows.indices.contains($0) }
+        } else {
+            candidateIndices = Array(app.windows.indices)
+        }
+
+        let windowsNeedingPreview = candidateIndices.compactMap { index -> WindowModel? in
+            let window = app.windows[index]
+            guard !window.isWindowlessPlaceholder,
+                  !WindowEnumerator.shouldSuppressFinderPreview(for: window),
+                  window.previewImage == nil,
+                  window.canCapturePreview else {
+                return nil
+            }
+            return window
         }
         guard !windowsNeedingPreview.isEmpty else { return }
 
@@ -255,6 +430,8 @@ private struct WindowPreviewSurfaceView: View {
     let distanceFromSelection: Int
     let presentationMode: SwitcherPresentationMode
     let maximumPreviewWidth: CGFloat?
+    /// When set, tunes card scale/opacity for the Option+Tab global search carousel only.
+    let globalSearchWindowCount: Int?
     var onHover: ((Bool) -> Void)? = nil
 
     @State private var isHovered = false
@@ -332,10 +509,15 @@ private struct WindowPreviewSurfaceView: View {
         .frame(width: geometry.visualSize.width, height: geometry.visualSize.height, alignment: previewContentAlignment)
         .padding(.horizontal, 14)
         .padding(.vertical, 14)
-        .offset(y: isSelected ? -6 : (isHovered ? -2 : 8))
-        .scaleEffect(isSelected ? 1.07 : (isHovered ? 1.015 : 1.0), anchor: .center)
+        .offset(y: selectionVerticalOffset)
+        .scaleEffect(selectionScale, anchor: .center)
         .opacity(cardOpacity)
-        .animation(.spring(response: 0.24, dampingFraction: 0.84), value: isSelected)
+        .animation(
+            globalSearchWindowCount == nil
+                ? .spring(response: 0.24, dampingFraction: 0.84)
+                : .spring(response: 0.34, dampingFraction: 0.86),
+            value: isSelected
+        )
         .animation(.easeOut(duration: 0.12), value: isHovered)
         .contentShape(RoundedRectangle(cornerRadius: geometry.cornerRadius, style: .continuous))
         .onAppear {
@@ -440,9 +622,40 @@ private struct WindowPreviewSurfaceView: View {
         .layoutPriority(1)
     }
 
+    private var selectionScale: CGFloat {
+        if let count = globalSearchWindowCount {
+            if isSelected { return count == 3 ? 1.04 : 1.05 }
+            if isHovered { return 1.01 }
+            switch count {
+            case 2: return 0.98
+            case 3: return 0.94
+            default: return distanceFromSelection == 1 ? 0.96 : 0.92
+            }
+        }
+        if isSelected { return 1.07 }
+        if isHovered { return 1.015 }
+        return 1.0
+    }
+
+    private var selectionVerticalOffset: CGFloat {
+        if globalSearchWindowCount != nil {
+            if isSelected { return -4 }
+            return isHovered ? -1 : 2
+        }
+        if isSelected { return -6 }
+        return isHovered ? -2 : 8
+    }
+
     private var cardOpacity: Double {
         if isSelected { return 1.0 }
-        if isHovered { return 0.94 }
+        if isHovered { return 0.96 }
+        if let count = globalSearchWindowCount {
+            switch count {
+            case 2: return 0.92
+            case 3: return 0.86
+            default: return distanceFromSelection == 1 ? 0.82 : 0.68
+            }
+        }
         return distanceFromSelection == 1 ? 0.82 : 0.68
     }
 

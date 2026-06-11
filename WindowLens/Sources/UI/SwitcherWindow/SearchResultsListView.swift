@@ -9,18 +9,12 @@ struct SearchResultsListView: View {
         VStack(alignment: .leading, spacing: 6) {
             // Section header
             HStack {
-                Text("Results")
+                Text("Results · \(results.count)")
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(.tertiary)
                     .textCase(.uppercase)
 
                 Spacer()
-
-                if results.count > 10 {
-                    Text("\(min(results.count, 10)) of \(results.count)")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.quaternary)
-                }
             }
             .padding(.horizontal, 4)
 
@@ -86,13 +80,20 @@ struct SearchResultRowView: View {
                 .shadow(color: .black.opacity(0.15), radius: 2, x: 0, y: 1)
 
             VStack(alignment: .leading, spacing: 1) {
-                // Primary text
-                Text(result.displayName)
-                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(result.displayName)
+                        .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
 
-                // Subtitle
+                    if result.app.showsOpenWindowCountBadge {
+                        Text("·\(result.app.openWindowCount)")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                            .layoutPriority(1)
+                    }
+                }
+
                 if let subtitle = result.displaySubtitle {
                     Text(subtitle)
                         .font(.system(size: 10))
@@ -102,13 +103,6 @@ struct SearchResultRowView: View {
             }
 
             Spacer(minLength: 0)
-
-            // Window indicator
-            if result.targetWindowIndex != nil {
-                Image(systemName: "macwindow")
-                    .font(.system(size: 10))
-                    .foregroundStyle(isSelected ? .secondary : .tertiary)
-            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)

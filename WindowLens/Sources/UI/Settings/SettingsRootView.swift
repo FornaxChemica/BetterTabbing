@@ -6,6 +6,7 @@ enum SettingsTab: String, CaseIterable, Identifiable, Hashable {
     case shortcuts
     case excludedApps
     case windowSlots
+    case usageHeatmap
     case about
 
     var id: String { rawValue }
@@ -17,6 +18,7 @@ enum SettingsTab: String, CaseIterable, Identifiable, Hashable {
         case .shortcuts: return "Shortcuts"
         case .excludedApps: return "Excluded Apps"
         case .windowSlots: return "Window Slots"
+        case .usageHeatmap: return "Usage Heatmap"
         case .about: return "About"
         }
     }
@@ -28,6 +30,7 @@ enum SettingsTab: String, CaseIterable, Identifiable, Hashable {
         case .shortcuts: return "keyboard"
         case .excludedApps: return "eye.slash"
         case .windowSlots: return "number.square"
+        case .usageHeatmap: return "chart.bar.xaxis"
         case .about: return "info.circle"
         }
     }
@@ -39,26 +42,18 @@ final class SettingsNavigation: ObservableObject {
     @Published var selectedTab: SettingsTab = .features
 }
 
-/// Light frosted settings backdrop — blur visible in chrome gaps; grouped cards stay readable.
-private struct SettingsFrostedBackground: View {
-    var body: some View {
-        ZStack {
-            Rectangle()
-                .fill(.thinMaterial)
-
-            Color.black.opacity(0.09)
-        }
-        .ignoresSafeArea()
-    }
-}
-
 struct SettingsRootView: View {
     @EnvironmentObject var appState: AppState
     @ObservedObject private var navigation = SettingsNavigation.shared
 
     var body: some View {
         ZStack {
-            SettingsFrostedBackground()
+            FrostedPanelBackground(
+                cornerRadius: 0,
+                strokeOpacity: 0,
+                shadowOpacity: 0
+            )
+            .ignoresSafeArea()
 
             NavigationSplitView {
                 List(selection: $navigation.selectedTab) {
@@ -100,6 +95,8 @@ struct SettingsRootView: View {
             ExcludedAppsSettingsView()
         case .windowSlots:
             WindowSlotsSettingsView()
+        case .usageHeatmap:
+            HeatmapSettingsView()
         case .about:
             AboutView()
         }

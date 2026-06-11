@@ -420,6 +420,12 @@ final class WindowVisitHistory: ObservableObject {
         current = visit
         future.removeAll()
         bumpMenuRevision()
+
+        WindowUsageStore.shared.recordAccess(
+            identity: visit.previewIdentity,
+            appName: visit.appName,
+            windowTitle: visit.windowTitle
+        )
     }
 
     private func trimPast() {

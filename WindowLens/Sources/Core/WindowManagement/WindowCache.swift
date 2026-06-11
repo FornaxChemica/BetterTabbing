@@ -68,19 +68,20 @@ final class WindowCache: @unchecked Sendable {
     }
 
     func getApplicationsForWorkspaceSwitching(forceRefresh: Bool = false) -> [ApplicationModel] {
+        if forceRefresh {
+            return getApplicationsSync(forceRefresh: true)
+        }
+
         let existingOrder = getCachedApplications().map { $0.pid }
 
-        if !forceRefresh && !existingOrder.isEmpty {
+        if !existingOrder.isEmpty {
             let cached = getCachedApplications()
             if !containsStaleFinderPlaceholder(in: cached) {
                 return cached
             }
         }
 
-        var applications = enumerateApplications(options: enumerationOptions())
-        attachResourceUsage(to: &applications)
-
-        return mergeApplications(applications, preservingOrder: existingOrder)
+        return getApplicationsSync(forceRefresh: true)
     }
 
     private func containsStaleFinderPlaceholder(in applications: [ApplicationModel]) -> Bool {

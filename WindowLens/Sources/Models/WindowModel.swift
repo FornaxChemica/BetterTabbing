@@ -129,17 +129,6 @@ struct WindowModel: Identifiable, Hashable {
             }
 
             if merged.previewImage == nil,
-               let ownerPID = merged.previewIdentity.ownerPID {
-                let normalizedTitle = PreviewIdentity.normalizedTitle(merged.title)
-                if let existingWindow = existing.first(where: { window in
-                    window.previewIdentity.ownerPID == ownerPID
-                        && PreviewIdentity.normalizedTitle(window.title) == normalizedTitle
-                }), let previewImage = existingWindow.previewImage {
-                    merged.previewImage = previewImage
-                }
-            }
-
-            if merged.previewImage == nil,
                let cachedPreview = WindowPreviewService.shared.cachedPreview(for: merged.previewIdentity) {
                 merged.previewImage = cachedPreview
             }

@@ -51,7 +51,17 @@ struct ApplicationModel: Identifiable, Hashable {
     }
 
     var hasMultipleWindows: Bool {
-        windows.count > 1
+        openWindowCount >= 2
+    }
+
+    /// Open windows excluding placeholders (used for badges and preview layout tiers).
+    var openWindowCount: Int {
+        let real = windows.filter { !$0.isWindowlessPlaceholder }.count
+        return real > 0 ? real : windows.count
+    }
+
+    var showsOpenWindowCountBadge: Bool {
+        openWindowCount >= 2
     }
 
     var primaryWindowTitle: String? {

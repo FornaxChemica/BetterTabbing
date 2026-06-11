@@ -1,7 +1,10 @@
 import AppKit
+import Carbon.HIToolbox
 import SwiftUI
 
 struct SwitcherView: View {
+    private static let inlineHeatmapPanelWidth: CGFloat = 920
+
     @EnvironmentObject var appState: AppState
     @FocusState private var isSearchFocused: Bool
 
@@ -28,7 +31,6 @@ struct SwitcherView: View {
         .fixedSize(horizontal: false, vertical: true)
         .animation(.easeInOut(duration: 0.18), value: appState.presentationMode)
         .animation(.easeInOut(duration: 0.18), value: appState.selectedAppIndex)
-        .animation(.easeInOut(duration: 0.16), value: appState.selectedWindowIndex)
         .onChange(of: appState.isSearchActive) { oldValue, isActive in
             if isActive {
                 appState.selectedSearchIndex = 0
@@ -63,85 +65,22 @@ struct SwitcherView: View {
         let contentWidth = currentAppOverlayContentWidth
 
         return VStack(spacing: 12) {
-            workspaceAppSwitcherHeader
-
-            if let selectedApp = appState.selectedApp {
-                WindowListView(
-                    app: selectedApp,
-                    selectedWindowIndex: appState.selectedWindowIndex,
-                    presentationMode: .workspace,
-                    onWindowHovered: { index in
-                        guard appState.shouldProcessMouseInput else { return }
-                        appState.selectedWindowIndex = index
-                    },
-                    onWindowClicked: { index in
-                        appState.selectedWindowIndex = index
-                        confirmSelection()
-                    }
-                )
-                .onContinuousHover { phase in
-                    if case .active = phase {
-                        appState.markMouseNavigation(at: NSEvent.mouseLocation)
-                    }
-                }
-            }
-        }
-        .frame(width: contentWidth)
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 10)
-    }
-
-    private var currentAppOverlayContentWidth: CGFloat {
-        let windowCount = appState.selectedApp.map(realWindowCount(for:)) ?? 1
-        return nativePreviewWidth(for: max(windowCount, 1))
-    }
-
-    private func realWindowCount(for app: ApplicationModel) -> Int {
-        let realWindows = app.windows.filter { !$0.isWindowlessPlaceholder }.count
-        return realWindows > 0 ? realWindows : app.windows.count
-    }
-
-    private var globalWindowSearchOverlay: some View {
-        VStack(spacing: 12) {
-            SearchBarView(
-                searchQuery: $appState.searchQuery,
-                isFocused: $isSearchFocused,
-                onSubmit: {
-                    confirmSelection()
-                }
-            )
-            .frame(width: min(calculateWidth() - 220, 560))
-
-            HStack(alignment: .top, spacing: 16) {
-                SearchResultsListView(
-                    results: appState.searchResults,
-                    selectedIndex: appState.selectedSearchIndex,
-                    onResultClicked: { index in
-                        appState.selectedSearchIndex = index
-                        if let result = appState.selectedSearchResult,
-                           let windowIndex = result.targetWindowIndex {
-                            appState.selectedWindowIndex = windowIndex
-                        }
-                        confirmSelection()
-                    }
-                )
-                .padding(14)
-                .frame(width: 330)
-                .background(
-                    GlassBackground(
-                        cornerRadius: 18,
-                        tintOpacity: 0.045,
-                        strokeOpacity: 0.08,
-                        shadowOpacity: 0.08,
-                        shadowRadius: 14,
-                        shadowYOffset: 8
-                    )
-                )
+            if showSearchResults {
+                workspaceSearchResultsStage
+            } else if appState.isResourceMonitorActive {
+                resourceMonitorInlinePanel
+            } else if appState.isUnusedWindowsActive {
+                UnusedWindowsInlineView()
+            } else if appState.isHeatmapActive {
+                HeatmapInlineView()
+                    .environmentObject(appState)
+            } else {
+                workspaceAppSwitcherHeader
 
                 if let selectedApp = appState.selectedApp {
                     WindowListView(
                         app: selectedApp,
-                        selectedWindowIndex: selectedPreviewWindowIndex,
+                        selectedWindowIndex: appState.selectedWindowIndex,
                         presentationMode: .workspace,
                         onWindowHovered: { index in
                             guard appState.shouldProcessMouseInput else { return }
@@ -152,16 +91,142 @@ struct SwitcherView: View {
                             confirmSelection()
                         }
                     )
-                    .frame(maxWidth: .infinity)
+                    .onContinuousHover { phase in
+                        if case .active = phase {
+                            appState.markMouseNavigation(at: NSEvent.mouseLocation)
+                        }
+                    }
                 }
             }
-            .frame(maxWidth: calculateWidth())
+
+            workspaceSearchSurface
+
+            workspaceCommandStrip
+        }
+        .frame(width: contentWidth)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 10)
+    }
+
+    private var resourceMonitorInlinePanel: some View {
+        NativeLiquidGlassSurface(
+            cornerRadius: 16,
+            tintOpacity: 0.03,
+            strokeOpacity: 0.06,
+            shadowOpacity: 0.08,
+            shadowRadius: 14,
+            shadowYOffset: 6
+        ) {
+            ResourceMonitorView(
+                entries: appState.resourceEntries,
+                systemMemory: appState.systemMemory,
+                systemCPU: appState.systemCPU,
+                cpuTemperature: appState.cpuTemperature,
+                thermalState: appState.thermalState,
+                cpuHistory: appState.cpuHistory,
+                memoryHistory: appState.memoryHistory,
+                aiInsight: appState.aiInsight,
+                aiInsightLoading: appState.aiInsightLoading,
+                ollamaAvailable: appState.ollamaAvailable,
+                isEHoldActive: appState.isEHoldActive,
+                eHoldProgress: appState.eHoldProgress,
+                isGroupingEnabled: appState.isProcessGroupingEnabled,
+                onRefreshInsight: { appState.refreshAIInsight() }
+            )
+            .padding(12)
+        }
+    }
+
+    private var currentAppOverlayContentWidth: CGFloat {
+        if appState.isResourceMonitorActive {
+            return 680
+        }
+        if appState.isUnusedWindowsActive {
+            return 640
+        }
+        if appState.isHeatmapActive {
+            return Self.inlineHeatmapPanelWidth
+        }
+
+        let windowCount = appState.selectedApp.map(realWindowCount(for:)) ?? 1
+        return nativePreviewWidth(for: max(windowCount, 1))
+    }
+
+    private func realWindowCount(for app: ApplicationModel) -> Int {
+        let realWindows = app.windows.filter { !$0.isWindowlessPlaceholder }.count
+        return realWindows > 0 ? realWindows : app.windows.count
+    }
+
+    private var globalWindowSearchOverlay: some View {
+        VStack(spacing: 14) {
+            SearchBarView(
+                searchQuery: $appState.searchQuery,
+                isFocused: $isSearchFocused,
+                chromeStyle: .embedded,
+                onSubmit: {
+                    confirmSelection()
+                }
+            )
+
+            workspaceSearchResultsStage
+                .frame(maxWidth: calculateWidth() - 36)
+
+            workspaceCommandStrip
+        }
+        .padding(18)
+        .background {
+            FrostedPanelBackground(
+                cornerRadius: 22,
+                shadowOpacity: 0.18,
+                shadowRadius: 22,
+                shadowYOffset: 10
+            )
         }
         .padding(.vertical, 10)
     }
 
     private var selectedPreviewWindowIndex: Int {
         appState.selectedSearchResult?.targetWindowIndex ?? appState.selectedWindowIndex
+    }
+
+    private var workspaceSearchResultsStage: some View {
+        HStack(alignment: .top, spacing: 16) {
+            SearchResultsListView(
+                results: appState.searchResults,
+                selectedIndex: appState.selectedSearchIndex,
+                onResultClicked: { index in
+                    appState.selectedSearchIndex = index
+                    if let result = appState.selectedSearchResult,
+                       let windowIndex = result.targetWindowIndex {
+                        appState.selectedWindowIndex = windowIndex
+                    }
+                    confirmSelection()
+                }
+            )
+            .padding(14)
+            .frame(width: 300)
+            .background {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.black.opacity(0.05))
+            }
+
+            if let selectedApp = appState.selectedApp {
+                WindowListView(
+                    app: selectedApp,
+                    selectedWindowIndex: selectedPreviewWindowIndex,
+                    presentationMode: .workspace,
+                    onWindowHovered: { index in
+                        guard appState.shouldProcessMouseInput else { return }
+                        appState.selectedWindowIndex = index
+                    },
+                    onWindowClicked: { index in
+                        appState.selectedWindowIndex = index
+                        confirmSelection()
+                    }
+                )
+                .frame(maxWidth: .infinity)
+            }
+        }
     }
 
     @ViewBuilder
@@ -197,50 +262,77 @@ struct SwitcherView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
                 .frame(width: min(calculateWidth() - 260, 440))
-                .background(
-                    GlassBackground(
-                        cornerRadius: 14,
-                        tintOpacity: 0.03,
-                        strokeOpacity: 0.055,
-                        shadowOpacity: 0.05,
-                        shadowRadius: 9,
-                        shadowYOffset: 4
-                    )
-                )
+                .background {
+                    FrostedPanelBackground(cornerRadius: 14, shadowOpacity: 0.10, shadowRadius: 10, shadowYOffset: 5)
+                }
             }
             .buttonStyle(.plain)
         }
     }
 
+    @ViewBuilder
     private var workspaceCommandStrip: some View {
-        HStack(spacing: 14) {
-            KeyHint(keys: ["tab"], label: showSearchResults ? "Result" : "App")
-            KeyHint(keys: ["`"], label: "Window")
-            KeyHint(keys: ["return"], label: appState.isSearchActive ? "Open" : "Search")
-            KeyHint(keys: ["E"], label: "Monitor")
-            KeyHint(keys: ["Q"], label: "Hold quit")
-            KeyHint(keys: ["esc"], label: "Close")
+        if isPinnedWindowSearch || showSearchResults {
+            globalSearchCommandStrip
+        } else {
+            carouselCommandStrip
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
-        .background(
-            GlassBackground(
-                cornerRadius: 13,
-                tintOpacity: 0.026,
-                strokeOpacity: 0.045,
-                shadowOpacity: 0.035,
-                shadowRadius: 8,
-                shadowYOffset: 4
-            )
-        )
-        .opacity(0.84)
+    }
+
+    private var carouselCommandStrip: some View {
+        let shortcuts = appState.preferences.shortcuts
+        let modules = appState.preferences.modules
+
+        return HStack(spacing: 10) {
+            commandHint(keys: workspaceCycleKeySymbols(from: shortcuts.workspaceOpen), label: "next app")
+            commandHint(keys: ["U"], label: "unused", isActive: appState.isUnusedWindowsActive)
+            if modules.usageHeatmapEnabled {
+                commandHint(keys: ["H"], label: "heatmap", isActive: appState.isHeatmapActive)
+            }
+            commandHint(keys: ["return"], label: "search")
+            commandHint(keys: ["esc"], label: "close")
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .commandStripChrome()
+        .frame(maxWidth: .infinity)
+    }
+
+    private var globalSearchCommandStrip: some View {
+        let canCycleWindows = (appState.selectedApp?.windows.filter { !$0.isWindowlessPlaceholder }.count ?? 0) > 1
+
+        return HStack(spacing: 14) {
+            commandHint(keys: ["up", "down"], label: "select")
+            if canCycleWindows {
+                commandHint(keys: ["tab"], label: "window")
+            }
+            commandHint(keys: ["return"], label: "open")
+            commandHint(keys: ["esc"], label: "clear / dismiss")
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .commandStripChrome()
+        .frame(maxWidth: .infinity)
+    }
+
+    private func commandHint(
+        keys: [String],
+        label: String,
+        isEnabled: Bool = true,
+        isActive: Bool = false
+    ) -> some View {
+        KeyHint(keys: keys, label: label, isActive: isActive)
+            .opacity(isEnabled ? 1 : 0.4)
+    }
+
+    private func workspaceCycleKeySymbols(from binding: KeyboardShortcutBinding) -> [String] {
+        WorkspaceCommandStripSymbols.cycleKeySymbols(from: binding)
     }
 
     @ViewBuilder
     private var workspaceAppSwitcherHeader: some View {
-        if let selectedApp = appState.selectedApp {
+        if appState.selectedApp != nil {
             VStack(spacing: 8) {
-                CurrentAppHeader(app: selectedApp)
+                CurrentAppHeader()
+                    .id(workspaceWindowCarouselIdentity)
 
                 if appState.filteredApplications.count > 1 {
                     workspaceAppSwitcherRail
@@ -248,6 +340,12 @@ struct SwitcherView: View {
             }
             .frame(maxWidth: .infinity)
         }
+    }
+
+    /// Forces header/panel refresh when the live window list changes (`ApplicationModel` equality is pid-only).
+    private var workspaceWindowCarouselIdentity: String {
+        guard let app = appState.selectedApp else { return "none" }
+        return app.windows.map(\.carouselItemID).joined(separator: "|")
     }
 
     private var workspaceAppSwitcherRail: some View {
@@ -292,7 +390,7 @@ struct SwitcherView: View {
         let appCount = appState.filteredApplications.count
 
         if appState.presentationMode == .nativePreview {
-            return nativePreviewWidth(for: appState.selectedApp?.windows.count ?? 1)
+            return nativePreviewWidth(for: appState.selectedApp?.openWindowCount ?? 1)
         }
 
         if isPinnedWindowSearch {
@@ -300,7 +398,16 @@ struct SwitcherView: View {
         }
 
         if appState.workspaceMode == .currentAppWindows {
-            return nativePreviewWidth(for: appState.selectedApp?.windows.count ?? 1)
+            if appState.isResourceMonitorActive {
+                return 680
+            }
+            if appState.isUnusedWindowsActive {
+                return 640
+            }
+            if appState.isHeatmapActive {
+                return Self.inlineHeatmapPanelWidth
+            }
+            return nativePreviewWidth(for: appState.selectedApp?.openWindowCount ?? 1)
         }
 
         if showSearchResults {
@@ -309,6 +416,14 @@ struct SwitcherView: View {
 
         if appState.isResourceMonitorActive {
             return 680
+        }
+
+        if appState.isUnusedWindowsActive {
+            return 640
+        }
+
+        if appState.isHeatmapActive {
+            return Self.inlineHeatmapPanelWidth
         }
 
         if appState.isSearchActive && appState.searchQuery.isEmpty {
@@ -350,37 +465,48 @@ struct SwitcherView: View {
     }
 }
 
+private func windowCountLabel(for app: ApplicationModel) -> String {
+    let count = app.windows.filter { !$0.isWindowlessPlaceholder }.count
+    return count == 1 ? "1 window" : "\(count) windows"
+}
+
 private struct CurrentAppHeader: View {
-    let app: ApplicationModel
+    @EnvironmentObject private var appState: AppState
+
+    private var app: ApplicationModel? {
+        appState.selectedApp
+    }
 
     var body: some View {
-        HStack(spacing: 9) {
-            Image(nsImage: app.icon)
-                .resizable()
-                .interpolation(.high)
-                .frame(width: 24, height: 24)
-                .cornerRadius(6)
+        if let app {
+            HStack(spacing: 9) {
+                Image(nsImage: app.icon)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 24, height: 24)
+                    .cornerRadius(6)
 
-            Text(app.name)
-                .font(.system(size: 13, weight: .semibold))
-                .lineLimit(1)
+                Text(app.name)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
 
-            Text("\(app.windows.filter { !$0.isWindowlessPlaceholder }.count) windows")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 13)
-        .padding(.vertical, 7)
-        .background(
-            GlassBackground(
-                cornerRadius: 14,
-                tintOpacity: 0.03,
-                strokeOpacity: 0.055,
-                shadowOpacity: 0.055,
-                shadowRadius: 10,
-                shadowYOffset: 5
+                Text(windowCountLabel(for: app))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 13)
+            .padding(.vertical, 7)
+            .background(
+                GlassBackground(
+                    cornerRadius: 14,
+                    tintOpacity: 0.03,
+                    strokeOpacity: 0.055,
+                    shadowOpacity: 0.055,
+                    shadowRadius: 10,
+                    shadowYOffset: 5
+                )
             )
-        )
+        }
     }
 }
 
@@ -465,6 +591,7 @@ private struct AppRailToken: View {
 /// A polished macOS-style keyboard key cap
 struct KeyCap: View {
     let symbol: String
+    var isActive: Bool = false
 
     /// Maps key names to SF Symbols or display text
     private var displayContent: (isSymbol: Bool, value: String) {
@@ -512,13 +639,13 @@ struct KeyCap: View {
                     .font(.system(size: 9, weight: .semibold, design: .rounded))
             }
         }
-        .foregroundStyle(.primary.opacity(0.6))
+        .foregroundStyle(.primary.opacity(isActive ? 0.85 : 0.6))
         .frame(minWidth: 18, minHeight: 16)
         .padding(.horizontal, 4)
         .padding(.vertical, 2)
         .background(
             RoundedRectangle(cornerRadius: 4, style: .continuous)
-                .fill(Color.white.opacity(0.1))
+                .fill(Color.white.opacity(isActive ? 0.15 : 0.1))
                 .overlay(
                     RoundedRectangle(cornerRadius: 4, style: .continuous)
                         .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.5)
@@ -531,19 +658,129 @@ struct KeyCap: View {
 struct KeyHint: View {
     let keys: [String]
     let label: String
+    var isActive: Bool = false
 
     var body: some View {
         HStack(spacing: 5) {
             HStack(spacing: 2) {
                 ForEach(keys, id: \.self) { key in
-                    KeyCap(symbol: key)
+                    KeyCap(symbol: key, isActive: isActive)
                 }
             }
+            .fixedSize(horizontal: true, vertical: false)
 
             Text(label)
                 .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(isActive ? .primary : .secondary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+private struct UnusedWindowsInlineView: View {
+    var body: some View {
+        NativeLiquidGlassSurface(
+            cornerRadius: 16,
+            tintOpacity: 0.03,
+            strokeOpacity: 0.06,
+            shadowOpacity: 0.08,
+            shadowRadius: 14,
+            shadowYOffset: 6
+        ) {
+            DeadWindowsView(isInline: true)
+                .frame(maxWidth: .infinity, maxHeight: 420)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+    }
+}
+
+private struct HeatmapInlineView: View {
+    var body: some View {
+        NativeLiquidGlassSurface(
+            cornerRadius: 16,
+            tintOpacity: 0.03,
+            strokeOpacity: 0.06,
+            shadowOpacity: 0.08,
+            shadowRadius: 14,
+            shadowYOffset: 6
+        ) {
+            HeatmapView(isInline: true)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(height: 480)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+    }
+}
+
+enum WorkspaceCommandStripSymbols {
+    /// Key caps shown while the workspace modifier is held — omits the open-workspace modifier.
+    static func cycleKeySymbols(from binding: KeyboardShortcutBinding) -> [String] {
+        keySymbols(for: KeyboardShortcutBinding(keyCode: binding.keyCode, modifiers: []))
+    }
+
+    static func keySymbols(for binding: KeyboardShortcutBinding) -> [String] {
+        var keys: [String] = []
+        for modifier in ModifierKey.allCases where binding.modifiers.contains(modifier) {
+            switch modifier {
+            case .command:
+                keys.append("cmd")
+            case .shift:
+                keys.append("shift")
+            case .option:
+                keys.append("opt")
+            case .control:
+                keys.append("ctrl")
+            }
+        }
+
+        keys.append(keySymbol(for: binding.keyCode))
+        return keys
+    }
+
+    static func keySymbol(for keyCode: UInt16) -> String {
+        switch Int(keyCode) {
+        case kVK_Tab:
+            return "tab"
+        case kVK_Return, kVK_ANSI_KeypadEnter:
+            return "return"
+        case kVK_Escape:
+            return "esc"
+        case kVK_ANSI_Grave:
+            return "`"
+        case kVK_ANSI_E:
+            return "E"
+        case kVK_ANSI_Q:
+            return "Q"
+        case kVK_ANSI_W:
+            return "W"
+        case kVK_UpArrow:
+            return "up"
+        case kVK_DownArrow:
+            return "down"
+        case kVK_ANSI_1:
+            return "1"
+        case kVK_ANSI_2:
+            return "2"
+        default:
+            return KeyboardShortcutBinding.keyDisplayName(for: keyCode).lowercased()
+        }
+    }
+}
+
+private extension View {
+    func commandStripChrome() -> some View {
+        padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background {
+                FrostedPanelBackground(
+                    cornerRadius: 13,
+                    shadowOpacity: 0.10,
+                    shadowRadius: 10,
+                    shadowYOffset: 5
+                )
+            }
     }
 }
 
@@ -555,7 +792,10 @@ extension Notification.Name {
     static let openSettings = Notification.Name("openSettings")
     static let shortcutsDidChange = Notification.Name("shortcutsDidChange")
     static let activateSwitcherSearch = Notification.Name("activateSwitcherSearch")
+    static let workspaceSearchKeyboardCaptureEnabled = Notification.Name("workspaceSearchKeyboardCaptureEnabled")
     static let workspaceWindowActivated = Notification.Name("workspaceWindowActivated")
     static let reinstallEventTap = Notification.Name("reinstallEventTap")
     static let openPermissions = Notification.Name("openPermissions")
+    static let openHeatmap = Notification.Name("openHeatmap")
+    static let openDeadWindows = Notification.Name("openDeadWindows")
 }

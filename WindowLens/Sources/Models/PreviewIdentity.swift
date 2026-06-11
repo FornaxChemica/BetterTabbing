@@ -71,6 +71,8 @@ struct PreviewIdentity: Hashable, Sendable {
     func matches(_ other: PreviewIdentity) -> Bool {
         if hasReliableCGWindowID,
            other.hasReliableCGWindowID,
+           cgWindowID != 0,
+           other.cgWindowID != 0,
            cgWindowID == other.cgWindowID,
            ownerOrBundleMatches(other) {
             return true
@@ -84,7 +86,18 @@ struct PreviewIdentity: Hashable, Sendable {
             return false
         }
 
-        return !Set(cacheKeys).isDisjoint(with: other.cacheKeys)
+        if let ownerPID,
+           let otherPID = other.ownerPID,
+           ownerPID == otherPID,
+           let axIndex,
+           let otherAxIndex = other.axIndex,
+           axIndex == otherAxIndex,
+           normalizedTitle == other.normalizedTitle,
+           !normalizedTitle.isEmpty {
+            return true
+        }
+
+        return false
     }
 
     func withOwner(pid: pid_t, bundleIdentifier: String?) -> PreviewIdentity {

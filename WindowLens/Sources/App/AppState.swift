@@ -48,6 +48,8 @@ final class AppState: ObservableObject {
     // MARK: - Resource Monitor State
 
     @Published var isResourceMonitorActive = false
+    @Published var isUnusedWindowsActive: Bool = false
+    @Published var isHeatmapActive: Bool = false
     @Published var isProcessGroupingEnabled = true
     @Published var resourceEntries: [ProcessResourceMonitor.ProcessResourceEntry] = []
     @Published var systemMemory: ProcessResourceMonitor.SystemMemory?
@@ -77,6 +79,7 @@ final class AppState: ObservableObject {
     private let maxHistoryPoints = 60
 
     private var resourceTimer: Timer?
+    private var workspaceWindowListRefreshTimer: AnyCancellable?
 
     // MARK: - E Hold (Charging Animation) State
 
@@ -110,6 +113,12 @@ final class AppState: ObservableObject {
 
     // MARK: - Computed Properties
 
+    /// Whether the search results list drives selection (pinned global search or typed query).
+    var isSearchingWithQuery: Bool {
+        presentationMode == .workspace && workspaceMode == .globalWindowSearch
+            || (isSearchActive && !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
     /// Search results when searching - includes both apps and specific windows
     var searchResults: [SearchResult] {
         return FuzzyMatcher.search(searchableApplications, query: searchQuery)
@@ -126,9 +135,8 @@ final class AppState: ObservableObject {
             return nil
         }
 
-        // When actively searching with a query, use search results
-        if isSearchActive && !searchQuery.isEmpty {
-            return selectedSearchResult?.app
+        if isSearchingWithQuery {
+            return selectedSearchResult?.app ?? searchResults.first?.app
         }
         // Otherwise use the app grid
         return appAtSelectedIndex(in: filteredApplications)
@@ -225,36 +233,57 @@ final class AppState: ObservableObject {
             return
         }
 
-        var updatedApplications = applications
-        var didUpdate = false
-        var didFindWindow = false
+        var bestMatch: (appIndex: Int, windowIndex: Int, score: Int)?
 
-        for appIndex in updatedApplications.indices {
-            if let ownerPID = update.ownerPID, updatedApplications[appIndex].pid != ownerPID {
+        for appIndex in applications.indices {
+            if let ownerPID = update.ownerPID, applications[appIndex].pid != ownerPID {
                 continue
             }
 
-            guard let windowIndex = updatedApplications[appIndex].windows.firstIndex(where: { window in
-                previewUpdate(update, matches: window)
-            }) else {
-                continue
-            }
+            for windowIndex in applications[appIndex].windows.indices {
+                let window = applications[appIndex].windows[windowIndex]
+                guard let score = previewMatchScore(update: update, for: window) else { continue }
 
-            didFindWindow = true
-            updatedApplications[appIndex].windows[windowIndex].previewImage = update.image
-            didUpdate = true
+                if let currentBest = bestMatch {
+                    if score > currentBest.score {
+                        bestMatch = (appIndex, windowIndex, score)
+                    }
+                } else {
+                    bestMatch = (appIndex, windowIndex, score)
+                }
+            }
         }
 
-        if didUpdate {
-            applications = updatedApplications
-            print("[AppState][preview] applied preview for windowID=\(update.windowID) pid=\(update.ownerPID.map(String.init) ?? "unknown")")
-        } else if !didFindWindow {
+        guard let match = bestMatch else {
             print("[AppState][preview] dropped preview; no matching windowID=\(update.windowID) pid=\(update.ownerPID.map(String.init) ?? "unknown")")
+            return
         }
+
+        var updatedApplications = applications
+        updatedApplications[match.appIndex].windows[match.windowIndex].previewImage = update.image
+        applications = updatedApplications
+        print("[AppState][preview] applied preview for windowID=\(update.windowID) pid=\(update.ownerPID.map(String.init) ?? "unknown")")
     }
 
-    private func previewUpdate(_ update: WindowPreviewUpdate, matches window: WindowModel) -> Bool {
-        window.previewIdentity.matches(update.previewIdentity)
+    private func previewMatchScore(update: WindowPreviewUpdate, for window: WindowModel) -> Int? {
+        let updateIdentity = update.previewIdentity
+        let windowIdentity = window.previewIdentity
+        guard windowIdentity.matches(updateIdentity) else { return nil }
+
+        if windowIdentity.hasReliableCGWindowID,
+           updateIdentity.hasReliableCGWindowID,
+           windowIdentity.cgWindowID != 0,
+           windowIdentity.cgWindowID == updateIdentity.cgWindowID {
+            return 100
+        }
+
+        if let windowAxIndex = windowIdentity.axIndex,
+           let updateAxIndex = updateIdentity.axIndex,
+           windowAxIndex == updateAxIndex {
+            return 50
+        }
+
+        return 10
     }
 
     // MARK: - Navigation Methods
@@ -312,7 +341,13 @@ final class AppState: ObservableObject {
             searchQuery = ""
             selectedSearchIndex = 0
             isResourceMonitorActive = false
+            isUnusedWindowsActive = false
+            isHeatmapActive = false
             stopResourcePolling()
+            stopWorkspaceWindowListRefreshTimer()
+        } else if workspaceMode == .currentAppWindows {
+            refreshWorkspaceWindowsForSelectedApp()
+            startWorkspaceWindowListRefreshTimer()
         }
     }
 
@@ -332,16 +367,12 @@ final class AppState: ObservableObject {
         searchQuery = ""
         selectedSearchIndex = 0
         isResourceMonitorActive = false
+        isUnusedWindowsActive = false
+        isHeatmapActive = false
         stopResourcePolling()
 
-        if visible {
-            prepareForPresentation(.workspace)
-        } else {
-            isVisible = false
-        }
-
         if let frontmostPID,
-           let appIndex = filteredApplications.firstIndex(where: { $0.pid == frontmostPID }) {
+           let appIndex = applications.firstIndex(where: { $0.pid == frontmostPID }) {
             selectedAppIndex = appIndex
         } else {
             selectedAppIndex = 0
@@ -358,6 +389,12 @@ final class AppState: ObservableObject {
         } else {
             selectedWindowIndex = 0
         }
+
+        if visible {
+            prepareForPresentation(.workspace)
+        } else {
+            isVisible = false
+        }
     }
 
     func refreshWorkspaceWindowsForSelectedApp(forceRefresh: Bool = true) {
@@ -371,22 +408,37 @@ final class AppState: ObservableObject {
         }
 
         let existingWindows = applications[appIndex].windows
-        let mergedWindows = WindowModel.mergedPreservingPreviews(
+        let existingCarouselIDs = Set(existingWindows.map(\.carouselItemID))
+
+        var mergedWindows = WindowModel.mergedPreservingPreviews(
             fresh: freshApp.windows,
             existing: existingWindows
         )
 
-        let existingCarouselIDs = Set(existingWindows.map(\.carouselItemID))
+        // Newly opened windows must not inherit a sibling's cached thumbnail.
+        for windowIndex in mergedWindows.indices {
+            let carouselID = mergedWindows[windowIndex].carouselItemID
+            guard !existingCarouselIDs.contains(carouselID) else { continue }
+            mergedWindows[windowIndex].previewImage = nil
+        }
+
         let mergedCarouselIDs = Set(mergedWindows.map(\.carouselItemID))
-        guard existingCarouselIDs != mergedCarouselIDs else { return }
+        let existingOpenCount = existingWindows.filter { !$0.isWindowlessPlaceholder }.count
+        let mergedOpenCount = mergedWindows.filter { !$0.isWindowlessPlaceholder }.count
+
+        guard existingCarouselIDs != mergedCarouselIDs || existingOpenCount != mergedOpenCount else { return }
 
         let previousWindow = existingWindows.indices.contains(selectedWindowIndex)
             ? existingWindows[selectedWindowIndex]
             : nil
 
         var updatedApplications = applications
-        updatedApplications[appIndex].windows = mergedWindows
+        var updatedApp = freshApp
+        updatedApp.windows = mergedWindows
+        updatedApplications[appIndex] = updatedApp
         applications = updatedApplications
+
+        requestWorkspacePreviews(for: updatedApp)
 
         if let previousWindow,
            let matchingIndex = mergedWindows.firstIndex(where: { window in
@@ -403,6 +455,140 @@ final class AppState: ObservableObject {
         } else {
             selectedWindowIndex = 0
         }
+    }
+
+    private func requestWorkspacePreviews(for app: ApplicationModel) {
+        let windowsNeedingPreview = app.windows.filter { window in
+            !window.isWindowlessPlaceholder
+                && !WindowEnumerator.shouldSuppressFinderPreview(for: window)
+                && window.previewImage == nil
+                && window.canCapturePreview
+        }
+        guard !windowsNeedingPreview.isEmpty else { return }
+
+        WindowPreviewService.shared.requestPreviews(
+            for: windowsNeedingPreview,
+            ownerPID: app.pid,
+            appName: app.name
+        )
+    }
+
+    private func refreshWorkspaceWindowsIfNeeded() {
+        guard presentationMode == .workspace, workspaceMode == .currentAppWindows else { return }
+        refreshWorkspaceWindowsForSelectedApp()
+    }
+
+    func startWorkspaceWindowListRefreshTimerIfNeeded() {
+        guard presentationMode == .workspace, workspaceMode == .currentAppWindows, isVisible else { return }
+        startWorkspaceWindowListRefreshTimer()
+    }
+
+    private func startWorkspaceWindowListRefreshTimer() {
+        workspaceWindowListRefreshTimer?.cancel()
+        workspaceWindowListRefreshTimer = Timer.publish(every: 0.35, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                guard let self else { return }
+                guard self.isVisible,
+                      self.presentationMode == .workspace,
+                      self.workspaceMode == .currentAppWindows else {
+                    self.stopWorkspaceWindowListRefreshTimer()
+                    return
+                }
+                self.refreshWorkspaceWindowsForSelectedApp()
+            }
+    }
+
+    private func stopWorkspaceWindowListRefreshTimer() {
+        workspaceWindowListRefreshTimer?.cancel()
+        workspaceWindowListRefreshTimer = nil
+    }
+
+    /// Re-enumerate the selected app using workspace-style window discovery before native previews.
+    /// Cmd+Tab keeps a frozen all-spaces snapshot; apps like Messages need live on-screen geometry/titles.
+    func refreshNativeWindowsForSelectedApp(forceRefresh: Bool = true) {
+        guard presentationMode == .nativePreview,
+              let selectedPID = selectedApp?.pid,
+              let appIndex = applications.firstIndex(where: { $0.pid == selectedPID }),
+              let freshApp = WindowCache.shared.getApplicationsForWorkspaceSwitching(forceRefresh: forceRefresh)
+                .first(where: { $0.pid == selectedPID }) else {
+            return
+        }
+
+        let normalizedFresh = WindowEnumerator.normalizeFinderApplicationIfNeeded(freshApp)
+        let existingWindows = applications[appIndex].windows
+        var mergedWindows = WindowModel.mergedPreservingPreviews(
+            fresh: normalizedFresh.windows,
+            existing: existingWindows
+        )
+
+        for windowIndex in mergedWindows.indices {
+            if mergedWindows[windowIndex].isWindowlessPlaceholder
+                || WindowEnumerator.shouldSuppressFinderPreview(for: mergedWindows[windowIndex]) {
+                mergedWindows[windowIndex].previewImage = nil
+            }
+        }
+
+        mergedWindows = WindowEnumerator.normalizeFinderApplicationIfNeeded(
+            ApplicationModel(
+                pid: normalizedFresh.pid,
+                bundleIdentifier: normalizedFresh.bundleIdentifier,
+                name: normalizedFresh.name,
+                icon: normalizedFresh.icon,
+                windows: mergedWindows,
+                isActive: normalizedFresh.isActive
+            )
+        ).windows
+
+        guard nativeWindowListNeedsRefresh(existing: existingWindows, merged: mergedWindows) else {
+            return
+        }
+
+        let previousWindow = existingWindows.indices.contains(selectedWindowIndex)
+            ? existingWindows[selectedWindowIndex]
+            : nil
+
+        var updatedApplications = applications
+        updatedApplications[appIndex].windows = mergedWindows
+        applications = updatedApplications
+        nativeTraversalSnapshot = applications
+
+        if let previousWindow,
+           let matchingIndex = mergedWindows.firstIndex(where: { window in
+               window.previewIdentity.matches(previousWindow.previewIdentity)
+           }) {
+            selectedWindowIndex = matchingIndex
+            return
+        }
+
+        if let firstRealIndex = mergedWindows.indices.first(where: { index in
+            !mergedWindows[index].isWindowlessPlaceholder
+        }) {
+            selectedWindowIndex = firstRealIndex
+        } else {
+            selectedWindowIndex = 0
+        }
+    }
+
+    private func nativeWindowListNeedsRefresh(existing: [WindowModel], merged: [WindowModel]) -> Bool {
+        if Set(existing.map(\.carouselItemID)) != Set(merged.map(\.carouselItemID)) {
+            return true
+        }
+
+        for window in merged where !window.isWindowlessPlaceholder {
+            guard let existingWindow = existing.first(where: { $0.previewIdentity.matches(window.previewIdentity) }) else {
+                return true
+            }
+
+            if existingWindow.title != window.title
+                || existingWindow.bounds != window.bounds
+                || existingWindow.windowID != window.windowID
+                || existingWindow.isMinimized != window.isMinimized {
+                return true
+            }
+        }
+
+        return false
     }
 
     func pinWorkspaceSearch() {
@@ -462,7 +648,6 @@ final class AppState: ObservableObject {
         switcherFrame: CGRect?,
         resolvedApplication: ApplicationModel? = nil
     ) -> Bool {
-        advanceNativeSelectionGeneration(clearAnchor: false)
         if let resolvedApplication {
             upsertNativeApplication(resolvedApplication)
         }
@@ -488,6 +673,7 @@ final class AppState: ObservableObject {
         selectedAppIndex = index
         hasNativeSelection = true
         if previousSelectedAppPID != selectedApp?.pid {
+            advanceNativeSelectionGeneration(clearAnchor: false)
             selectedWindowIndex = 0
         }
         return true
@@ -677,21 +863,21 @@ final class AppState: ObservableObject {
             selectedWindowIndex = 0
         }
 
-        if isSearchActive && !searchQuery.isEmpty {
+        if isSearchingWithQuery {
             selectedSearchIndex = min(selectedSearchIndex, max(searchResults.count - 1, 0))
         }
     }
 
     func selectNextApp() {
         markKeyboardNavigation()
-        if isSearchActive && !searchQuery.isEmpty {
-            // Navigate through search results
+        if isSearchingWithQuery {
             let count = searchResults.count
             guard count > 0 else { return }
             selectedSearchIndex = (selectedSearchIndex + 1) % count
-            // Update window index if search result targets a specific window
             if let result = selectedSearchResult, let windowIndex = result.targetWindowIndex {
                 selectedWindowIndex = windowIndex
+            } else {
+                selectedWindowIndex = 0
             }
         } else {
             let count = filteredApplications.count
@@ -707,14 +893,14 @@ final class AppState: ObservableObject {
 
     func selectPreviousApp() {
         markKeyboardNavigation()
-        if isSearchActive && !searchQuery.isEmpty {
-            // Navigate through search results
+        if isSearchingWithQuery {
             let count = searchResults.count
             guard count > 0 else { return }
             selectedSearchIndex = (selectedSearchIndex - 1 + count) % count
-            // Update window index if search result targets a specific window
             if let result = selectedSearchResult, let windowIndex = result.targetWindowIndex {
                 selectedWindowIndex = windowIndex
+            } else {
+                selectedWindowIndex = 0
             }
         } else {
             let count = filteredApplications.count
@@ -730,6 +916,7 @@ final class AppState: ObservableObject {
 
     func selectNextWindow() {
         markKeyboardNavigation()
+        refreshWorkspaceWindowsIfNeeded()
         guard let app = selectedApp else { return }
         let indices = selectableWindowIndices(in: app)
         let count = indices.count
@@ -743,6 +930,7 @@ final class AppState: ObservableObject {
 
     func selectPreviousWindow() {
         markKeyboardNavigation()
+        refreshWorkspaceWindowsIfNeeded()
         guard let app = selectedApp else { return }
         let indices = selectableWindowIndices(in: app)
         let count = indices.count
@@ -824,10 +1012,30 @@ final class AppState: ObservableObject {
     // MARK: - Resource Monitor Methods
 
     func toggleResourceMonitor() {
+        isUnusedWindowsActive = false
+        isHeatmapActive = false
         isResourceMonitorActive.toggle()
         if isResourceMonitorActive {
             startResourcePolling()
         } else {
+            stopResourcePolling()
+        }
+    }
+
+    func toggleUnusedWindows() {
+        isHeatmapActive = false
+        isUnusedWindowsActive.toggle()
+        if isUnusedWindowsActive {
+            isResourceMonitorActive = false
+            stopResourcePolling()
+        }
+    }
+
+    func toggleHeatmap() {
+        isUnusedWindowsActive = false
+        isHeatmapActive.toggle()
+        if isHeatmapActive {
+            isResourceMonitorActive = false
             stopResourcePolling()
         }
     }
@@ -1108,6 +1316,7 @@ final class AppState: ObservableObject {
         cancelEHold(triggeredAI: false)
         cancelQuitHold()
         stopResourcePolling()
+        stopWorkspaceWindowListRefreshTimer()
         advanceNativeSelectionGeneration(clearAnchor: true)
         isVisible = false
         presentationMode = .workspace
@@ -1126,6 +1335,8 @@ final class AppState: ObservableObject {
         hasMouseMoved = false
         lastMousePosition = nil
         isResourceMonitorActive = false
+        isUnusedWindowsActive = false
+        isHeatmapActive = false
     }
 
     private init() {}

@@ -83,6 +83,16 @@ struct ShortcutSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Usage Heatmap") {
+                KeyboardShortcutRow(
+                    title: "Open heatmap",
+                    shortcut: shortcuts.usageHeatmapOpen.displayString
+                )
+                Text("Works globally when the switcher is closed. Change this in Features.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("While Switcher is Open") {
                 KeyboardShortcutRow(title: "Next application", shortcut: "TAB")
                 KeyboardShortcutRow(title: "Previous application", shortcut: "⇧ TAB")

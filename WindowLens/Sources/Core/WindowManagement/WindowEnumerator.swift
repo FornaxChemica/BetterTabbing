@@ -161,9 +161,10 @@ final class WindowEnumerator {
                     print("[WindowEnumerator][preview] missing AX CGWindowID for \(name) title=\(title ?? "untitled") axResult=\(idResult.rawValue); using pseudoID=\(finalWindowID)")
                 }
 
+                // Pseudo-ID windows lack CGWindowID for space lookup; AX geometry already validated above.
                 let isOnCurrentSpace = hasReliableWindowID
                     ? currentSpaceWindowIDs?.contains(finalWindowID) ?? true
-                    : options.includeAllSpaces
+                    : true
                 if !options.includeAllSpaces && !isMinimized && !isOnCurrentSpace {
                     rejectedWindows.append("#\(axIndex) off-space title=\(title ?? "untitled") id=\(finalWindowID)")
                     continue
@@ -854,13 +855,15 @@ final class WindowEnumerator {
             return false
         }
 
-        let lhsTitle = normalizedWindowTitle(lhs.windowName ?? lhs.ownerName)
-        let rhsTitle = normalizedWindowTitle(rhs.windowName ?? rhs.ownerName)
-        guard !lhsTitle.isEmpty, lhsTitle == rhsTitle else {
-            return false
+        if lhs.hasReliableWindowID,
+           rhs.hasReliableWindowID,
+           lhs.windowID != 0,
+           rhs.windowID != 0,
+           lhs.windowID == rhs.windowID {
+            return true
         }
 
-        return lhs.ownerPID == rhs.ownerPID
+        return false
     }
 
     private static func previewIdentity(for window: WindowInfo) -> PreviewIdentity {

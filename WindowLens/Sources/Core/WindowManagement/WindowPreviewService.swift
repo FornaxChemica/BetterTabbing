@@ -97,10 +97,21 @@ final class WindowPreviewService: @unchecked Sendable {
         for identity: PreviewIdentity,
         storeDiskResultInMemory: Bool
     ) -> NSImage? {
-        for key in identity.cacheKeys {
+        let (strongKeys, weakKeys) = Self.partitionCacheKeys(identity.cacheKeys)
+
+        for key in strongKeys {
             if let image = cache.object(forKey: key as NSString) {
                 log("memory cache hit key=\(key)")
                 return image
+            }
+        }
+
+        if strongKeys.isEmpty {
+            for key in weakKeys {
+                if let image = cache.object(forKey: key as NSString) {
+                    log("memory cache hit key=\(key)")
+                    return image
+                }
             }
         }
 
@@ -266,10 +277,17 @@ final class WindowPreviewService: @unchecked Sendable {
             let windowsByID = Dictionary(content.windows.map { ($0.windowID, $0) }, uniquingKeysWith: { first, _ in first })
             log("ScreenCaptureKit returned \(content.windows.count) window(s), \(content.displays.count) display(s), \(content.applications.count) app(s)")
 
+            var assignedSCWindowIDs = Set<CGWindowID>()
+
             for request in requests {
                 defer { clearInFlight(request.inFlightKey) }
 
-                guard let window = matchWindow(for: request, windowsByID: windowsByID, allWindows: content.windows) else {
+                guard let window = matchWindow(
+                    for: request,
+                    windowsByID: windowsByID,
+                    allWindows: content.windows,
+                    assignedSCWindowIDs: assignedSCWindowIDs
+                ) else {
                     log("no SCWindow match for AX id=\(request.windowID) pid=\(request.ownerPID.map(String.init) ?? "unknown") app=\(request.appName ?? "unknown") title=\(request.title) bounds=\(Self.describe(request.bounds)); candidates=\(candidateSummary(for: request, in: content.windows))")
                     continue
                 }
@@ -306,6 +324,7 @@ final class WindowPreviewService: @unchecked Sendable {
                         storeInVolatileMemory: shouldStoreVolatileMemory(for: request.volatileMemoryGeneration)
                     )
                     markSuccessfulCapture(request.inFlightKey)
+                    assignedSCWindowIDs.insert(window.windowID)
                     postPreview(image, for: request)
                 } catch {
                     log("capture failed AX id=\(request.windowID) matchedSC id=\(window.windowID) title=\(request.title): \(error)")
@@ -322,20 +341,23 @@ final class WindowPreviewService: @unchecked Sendable {
     private func matchWindow(
         for request: PreviewRequest,
         windowsByID: [CGWindowID: SCWindow],
-        allWindows: [SCWindow]
+        allWindows: [SCWindow],
+        assignedSCWindowIDs: Set<CGWindowID> = []
     ) -> SCWindow? {
-        if request.previewIdentity.hasReliableCGWindowID, let directMatch = windowsByID[request.windowID] {
+        if request.previewIdentity.hasReliableCGWindowID,
+           let directMatch = windowsByID[request.windowID],
+           !assignedSCWindowIDs.contains(directMatch.windowID) {
             let directPID = directMatch.owningApplication?.processID
             if request.ownerPID == nil || directPID == request.ownerPID {
                 if Self.titleMatches(window: directMatch, request: request) {
                     log("matched by CGWindowID AX id=\(request.windowID) SC id=\(directMatch.windowID) pid=\(directPID.map(String.init) ?? "unknown") title=\(directMatch.title ?? "untitled")")
-                    return directMatch
+                } else {
+                    log("matched by CGWindowID despite title mismatch AX id=\(request.windowID) SC id=\(directMatch.windowID) requestedTitle=\(request.title) scTitle=\(directMatch.title ?? "untitled") requestedBounds=\(Self.describe(request.bounds)) scFrame=\(Self.describe(directMatch.frame))")
                 }
-
-                log("ignored CGWindowID match with title mismatch AX id=\(request.windowID) SC id=\(directMatch.windowID) requestedTitle=\(request.title) scTitle=\(directMatch.title ?? "untitled") requestedBounds=\(Self.describe(request.bounds)) scFrame=\(Self.describe(directMatch.frame))")
-            } else {
-                log("ignored CGWindowID match with wrong pid AX id=\(request.windowID) requestedPID=\(request.ownerPID.map(String.init) ?? "unknown") scPID=\(directPID.map(String.init) ?? "unknown") title=\(directMatch.title ?? "untitled")")
+                return directMatch
             }
+
+            log("ignored CGWindowID match with wrong pid AX id=\(request.windowID) requestedPID=\(request.ownerPID.map(String.init) ?? "unknown") scPID=\(directPID.map(String.init) ?? "unknown") title=\(directMatch.title ?? "untitled")")
         }
 
         guard let ownerPID = request.ownerPID else { return nil }
@@ -348,6 +370,7 @@ final class WindowPreviewService: @unchecked Sendable {
         guard !candidates.isEmpty else { return nil }
 
         let rankedCandidates = candidates
+            .filter { !assignedSCWindowIDs.contains($0.windowID) }
             .map { window in (window, Self.matchScore(window: window, request: request)) }
             .sorted { lhs, rhs in lhs.1 < rhs.1 }
 
@@ -415,6 +438,19 @@ final class WindowPreviewService: @unchecked Sendable {
         score += CGFloat(abs(window.windowLayer)) * 20
 
         return score
+    }
+
+    private static func partitionCacheKeys(_ keys: [String]) -> (strong: [String], weak: [String]) {
+        var strong: [String] = []
+        var weak: [String] = []
+        for key in keys {
+            if key.contains(":wid:") || key.hasPrefix("wid:") {
+                strong.append(key)
+            } else {
+                weak.append(key)
+            }
+        }
+        return (strong, weak)
     }
 
     private static func normalizedTitle(_ title: String) -> String {

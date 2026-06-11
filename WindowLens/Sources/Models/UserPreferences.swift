@@ -29,11 +29,35 @@ struct UserPreferences: Codable {
     // Keyboard shortcuts
     var shortcuts = ShortcutPreferences()
 
+    // Usage heatmap
+    var heatmap = HeatmapPreferences()
+
     struct ModuleSettings: Codable, Equatable {
         var windowSlotsEnabled: Bool = true
         var windowHistoryEnabled: Bool = true
         var workspaceSwitcherEnabled: Bool = true
         var resourceMonitorEnabled: Bool = true
+        var usageHeatmapEnabled: Bool = true
+    }
+
+    struct HeatmapPreferences: Codable, Equatable {
+        var defaultTimeRange: HeatmapDefaultTimeRange = .thisWeek
+    }
+
+    enum HeatmapDefaultTimeRange: String, Codable, CaseIterable, Identifiable {
+        case today
+        case thisWeek
+        case thisMonth
+
+        var id: String { rawValue }
+
+        var displayName: String {
+            switch self {
+            case .today: return "Today"
+            case .thisWeek: return "This week"
+            case .thisMonth: return "This month"
+            }
+        }
     }
 
     enum Theme: String, Codable, CaseIterable {

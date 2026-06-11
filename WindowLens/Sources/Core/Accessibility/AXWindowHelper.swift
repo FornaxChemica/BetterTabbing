@@ -216,6 +216,128 @@ final class AXWindowHelper {
 
         return accumulator.result()
     }
+
+    /// Closes a window using standard macOS AX actions (works for native and most Electron apps like Slack).
+    static func closeWindow(_ axWindow: AXUIElement, pid: pid_t, windowID: CGWindowID = 0) -> Bool {
+        prepareAutomationAccess(pid: pid)
+
+        let targetWindow = (windowID != 0 ? getAXWindow(for: windowID, pid: pid) : nil) ?? axWindow
+        clearFullscreenIfNeeded(targetWindow)
+        unminimizeIfNeeded(targetWindow)
+
+        let performedClose =
+            AXUIElementPerformAction(targetWindow, "AXClose" as CFString) == .success
+            || pressAttributedCloseButton(on: targetWindow)
+            || pressCloseButtonBoundedOnWindow(targetWindow)
+
+        guard performedClose else { return false }
+
+        if windowID != 0 {
+            // AXClose can report success while a minimized/hidden window stays in the window list.
+            usleep(80_000)
+            return getAXWindow(for: windowID, pid: pid) == nil
+        }
+        return true
+    }
+
+    private static func pressCloseButtonBoundedOnWindow(_ window: AXUIElement) -> Bool {
+        var nodeBudget = 48
+        return pressCloseButtonBounded(in: window, maxDepth: 4, remainingNodes: &nodeBudget)
+    }
+
+    private static func unminimizeIfNeeded(_ axWindow: AXUIElement) {
+        guard isMinimized(axWindow) else { return }
+        _ = AXUIElementSetAttributeValue(
+            axWindow,
+            kAXMinimizedAttribute as CFString,
+            false as CFTypeRef
+        )
+        usleep(40_000)
+    }
+
+    private static func isMinimized(_ axWindow: AXUIElement) -> Bool {
+        var minimizedRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axWindow, kAXMinimizedAttribute as CFString, &minimizedRef) == .success else {
+            return false
+        }
+        return (minimizedRef as? Bool) == true
+    }
+
+    /// Electron/Chromium apps (Slack, VS Code, etc.) may hide title-bar controls until this is set.
+    private static func prepareAutomationAccess(pid: pid_t) {
+        let axApp = AXUIElementCreateApplication(pid)
+        _ = AXUIElementSetAttributeValue(axApp, "AXManualAccessibility" as CFString, true as CFTypeRef)
+        _ = AXUIElementSetAttributeValue(axApp, "AXEnhancedUserInterface" as CFString, true as CFTypeRef)
+    }
+
+    private static func clearFullscreenIfNeeded(_ axWindow: AXUIElement) {
+        let fullscreenAttribute = "AXFullScreen" as CFString
+        var fullscreenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axWindow, fullscreenAttribute, &fullscreenRef) == .success,
+              (fullscreenRef as? Bool) == true else {
+            return
+        }
+        _ = AXUIElementSetAttributeValue(axWindow, fullscreenAttribute, false as CFTypeRef)
+    }
+
+    /// Uses `kAXCloseButtonAttribute` — the supported way to reach the red close button without walking the web view tree.
+    private static func pressAttributedCloseButton(on window: AXUIElement) -> Bool {
+        var closeButtonRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXCloseButtonAttribute as CFString, &closeButtonRef) == .success,
+              let closeButton = closeButtonRef else {
+            return false
+        }
+        let button = closeButton as! AXUIElement
+        return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+    }
+
+    private static func pressCloseButtonBounded(
+        in element: AXUIElement,
+        maxDepth: Int,
+        remainingNodes: inout Int
+    ) -> Bool {
+        guard remainingNodes > 0 else { return false }
+        remainingNodes -= 1
+
+        if isCloseButton(element),
+           AXUIElementPerformAction(element, kAXPressAction as CFString) == .success {
+            return true
+        }
+
+        guard maxDepth > 0, remainingNodes > 0 else { return false }
+
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+              let children = childrenRef as? [AXUIElement] else {
+            return false
+        }
+
+        for child in children {
+            if pressCloseButtonBounded(in: child, maxDepth: maxDepth - 1, remainingNodes: &remainingNodes) {
+                return true
+            }
+            if remainingNodes <= 0 { break }
+        }
+        return false
+    }
+
+    private static func isCloseButton(_ element: AXUIElement) -> Bool {
+        var roleRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success,
+           let role = roleRef as? String,
+           role == "AXCloseButton" {
+            return true
+        }
+
+        var subroleRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subroleRef) == .success,
+           let subrole = subroleRef as? String,
+           subrole == kAXCloseButtonSubrole as String {
+            return true
+        }
+
+        return false
+    }
 }
 
 // Private API declaration for getting CGWindowID from AXUIElement

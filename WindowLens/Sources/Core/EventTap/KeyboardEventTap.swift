@@ -27,6 +27,8 @@ enum ShortcutEvent {
     case quitHoldStarted   // Q key held down - start quit progress
     case quitHoldCancelled // Q key released - cancel quit
     case toggleResourceMonitor // E key tap - toggle mini activity monitor
+    case toggleUnusedWindows
+    case toggleHeatmap
     case eHoldStarted          // E key pressed - start charging animation
     case aiInsightRequested    // E key held - start ollama + query
     case aiInsightCancelled    // E key released after hold
@@ -40,6 +42,7 @@ enum ShortcutEvent {
     case windowHistoryUndo
     case windowHistoryRedo
     case activateWindowSlot(Int)
+    case openUsageHeatmap
 }
 
 private final class KeyboardEventTapHealthTarget: NSObject {
@@ -66,6 +69,7 @@ final class KeyboardEventTap {
     private var previousFlags: CGEventFlags = []
     private var switcherVisible = false
     private var searchModeActive = false  // When true, don't auto-confirm on modifier release
+    private var searchingWithQuery = false
     private var nativeCommandTabSessionActive = false
     private var callbackCount = 0
     private var hasLoggedFirstCallback = false
@@ -287,6 +291,10 @@ final class KeyboardEventTap {
     func setSearchModeActive(_ active: Bool) {
         searchModeActive = active
         print("[KeyboardEventTap] Search mode: \(active)")
+    }
+
+    func setSearchingWithQuery(_ active: Bool) {
+        searchingWithQuery = active
     }
 
     func setActivationModifier(_ modifier: ModifierKey) {
@@ -699,6 +707,13 @@ final class KeyboardEventTap {
             }
         }
 
+        if !switcherVisible && !pendingActivation && !nativeCommandTabSessionActive && !isRepeat,
+           UserPreferences.load().modules.usageHeatmapEnabled,
+           cachedShortcuts.usageHeatmapOpen.matches(keyCode: keyCode, flags: flags) {
+            onShortcutTriggered.send(.openUsageHeatmap)
+            return nil
+        }
+
         // Global window slot activation
         if !isRepeat,
            UserPreferences.load().modules.windowSlotsEnabled,
@@ -711,6 +726,19 @@ final class KeyboardEventTap {
 
         // Handle shortcuts while switcher is visible OR pending (check this FIRST)
         if switcherVisible || pendingActivation {
+            // In search mode, Tab cycles windows — not apps — even while Option (etc.) is still held.
+            if (searchModeActive || searchingWithQuery), keyCode == activationKeyCode {
+                hadInteractionSinceActivation = true
+                if modifierTracker.isShiftPressed {
+                    debugLog("Tab+Shift in search = previous window")
+                    onShortcutTriggered.send(.cycleWindowPrevious)
+                } else {
+                    debugLog("Tab in search = next window")
+                    onShortcutTriggered.send(.cycleWindowNext)
+                }
+                return nil
+            }
+
             // Activation key = cycle through apps while holding the active shortcut modifiers.
             // If pending, this cancels quick-switch and shows the panel.
             if let shortcut = activeShortcutMatches(keyCode: keyCode, flags: flags) {
@@ -801,6 +829,22 @@ final class KeyboardEventTap {
                 }
             }
 
+            if keyCode == UInt16(kVK_ANSI_U) {
+                let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+                if isRepeat { return nil }
+                hadInteractionSinceActivation = true
+                onShortcutTriggered.send(.toggleUnusedWindows)
+                return nil
+            }
+
+            if keyCode == UInt16(kVK_ANSI_H) {
+                let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+                if isRepeat { return nil }
+                hadInteractionSinceActivation = true
+                onShortcutTriggered.send(.toggleHeatmap)
+                return nil
+            }
+
             // Enter = activate search OR confirm selection (in search mode)
             if keyCode == UInt16(kVK_Return) {
                 hadInteractionSinceActivation = true
@@ -821,49 +865,35 @@ final class KeyboardEventTap {
                 return nil
             }
 
-            // Arrow keys for navigation (WSAD only in normal mode so user can type in search)
-            if searchModeActive {
-                if flags.contains(.maskCommand), keyCode == UInt16(kVK_ANSI_1) {
-                    hadInteractionSinceActivation = true
-                    debugLog("Search scope = current app")
-                    onShortcutTriggered.send(.workspaceSearchScopeCurrentApp)
-                    return nil
-                }
-
-                if flags.contains(.maskCommand), keyCode == UInt16(kVK_ANSI_2) {
-                    hadInteractionSinceActivation = true
-                    debugLog("Search scope = all windows")
-                    onShortcutTriggered.send(.workspaceSearchScopeAllWindows)
-                    return nil
-                }
-
-                // In search mode: only arrow keys navigate results (WSAD passed through for typing)
+            // Typed search with results: arrows move the results list, Tab cycles windows.
+            if searchingWithQuery {
                 if keyCode == UInt16(kVK_UpArrow) || keyCode == UInt16(kVK_LeftArrow) {
                     hadInteractionSinceActivation = true
-                    debugLog("Navigate up (search)")
+                    debugLog("Navigate up (search results)")
                     onShortcutTriggered.send(.navigateUp)
                     return nil
                 }
 
                 if keyCode == UInt16(kVK_DownArrow) || keyCode == UInt16(kVK_RightArrow) {
                     hadInteractionSinceActivation = true
-                    debugLog("Navigate down (search)")
+                    debugLog("Navigate down (search results)")
                     onShortcutTriggered.send(.navigateDown)
                     return nil
                 }
 
-                // TAB in search mode = navigate down (like down arrow)
                 if keyCode == activationKeyCode {
                     hadInteractionSinceActivation = true
                     if modifierTracker.isShiftPressed {
-                        debugLog("Tab+Shift in search = navigate up")
-                        onShortcutTriggered.send(.navigateUp)
+                        debugLog("Tab+Shift in search = previous window")
+                        onShortcutTriggered.send(.cycleWindowPrevious)
                     } else {
-                        debugLog("Tab in search = navigate down")
-                        onShortcutTriggered.send(.navigateDown)
+                        debugLog("Tab in search = next window")
+                        onShortcutTriggered.send(.cycleWindowNext)
                     }
                     return nil
                 }
+            } else if searchModeActive {
+                // Search field focused but no query yet — pass arrow keys through for typing.
             } else {
                 // In normal mode: arrows and WSAD navigate the spatial workspace.
                 // Left/Right (A/D) = cycle through apps (linear)

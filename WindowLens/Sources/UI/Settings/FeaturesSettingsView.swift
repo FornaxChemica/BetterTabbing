@@ -44,10 +44,39 @@ struct FeaturesSettingsView: View {
                 ) {
                     shortcutSettingRow(title: "Toggle monitor", action: .resourceMonitorToggle, isEnabled: appState.preferences.modules.resourceMonitorEnabled)
                 }
+
+                moduleSection(
+                    title: "Usage Heatmap",
+                    footer: "Opens a usage heatmap for open apps. Customize default range in the Usage Heatmap settings tab.",
+                    isEnabled: moduleBinding(\.usageHeatmapEnabled)
+                ) {
+                    shortcutSettingRow(title: "Open heatmap", action: .usageHeatmapOpen, isEnabled: appState.preferences.modules.usageHeatmapEnabled)
+                }
+            }
+
+            Section {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Unused Windows")
+                            .font(.body)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Button("Open") {
+                        openDeadWindows()
+                    }
+                }
+            } footer: {
+                Text("Find open windows you haven't focused recently and minimize or close them.")
             }
         }
         .formStyle(.grouped)
         .navigationTitle("Features")
+    }
+
+    private func openDeadWindows() {
+        NotificationCenter.default.post(name: .openDeadWindows, object: nil)
     }
 
     private func moduleBinding(_ keyPath: WritableKeyPath<UserPreferences.ModuleSettings, Bool>) -> Binding<Bool> {

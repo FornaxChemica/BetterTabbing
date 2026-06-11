@@ -165,7 +165,10 @@ final class SwitcherPanelManager {
     }
 
     func showCurrentAppWindowSwitcher() {
-        guard let targetScreen = nativePreviewScreen(),
+        AppState.shared.refreshWorkspaceWindowsForSelectedApp(forceRefresh: true)
+        AppState.shared.startWorkspaceWindowListRefreshTimerIfNeeded()
+
+        guard let targetScreen = workspaceSwitcherScreen(),
               let targetPanel = ensurePanelExists(for: targetScreen) else { return }
 
         for panel in panels.values where panel !== targetPanel {
@@ -205,6 +208,62 @@ final class SwitcherPanelManager {
         for panel in panels.values where panel.isVisible {
             panel.hidePanel()
         }
+    }
+
+    private func workspaceSwitcherScreen() -> NSScreen? {
+        if let app = AppState.shared.selectedApp,
+           let window = app.windows.first(where: { window in
+               !window.isWindowlessPlaceholder && window.bounds.width > 16 && window.bounds.height > 16
+           }),
+           let screen = screenContaining(CGRect(
+               x: window.bounds.minX,
+               y: window.bounds.minY,
+               width: window.bounds.width,
+               height: window.bounds.height
+           )) {
+            return screen
+        }
+
+        if let frontmost = NSWorkspace.shared.frontmostApplication,
+           let screen = screenContainingFrontmostWindow(for: frontmost.processIdentifier) {
+            return screen
+        }
+
+        return nativePreviewScreen()
+    }
+
+    private func screenContainingFrontmostWindow(for pid: pid_t) -> NSScreen? {
+        guard let windowInfo = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
+            return nil
+        }
+
+        for info in windowInfo {
+            guard let ownerPID = info[kCGWindowOwnerPID as String] as? pid_t,
+                  ownerPID == pid,
+                  let boundsDict = info[kCGWindowBounds as String] as? [String: CGFloat],
+                  let x = boundsDict["X"],
+                  let y = boundsDict["Y"],
+                  let width = boundsDict["Width"],
+                  let height = boundsDict["Height"],
+                  width > 16,
+                  height > 16,
+                  let layer = info[kCGWindowLayer as String] as? Int,
+                  layer == 0 else {
+                continue
+            }
+
+            let frame = CGRect(x: x, y: y, width: width, height: height)
+            if let screen = screenContaining(frame) {
+                return screen
+            }
+        }
+
+        return nil
+    }
+
+    private func screenContaining(_ frame: CGRect) -> NSScreen? {
+        let center = CGPoint(x: frame.midX, y: frame.midY)
+        return NSScreen.screens.first { $0.frame.contains(center) }
     }
 
     private func nativePreviewScreen() -> NSScreen? {
@@ -418,6 +477,7 @@ final class SwitcherPanelManager {
     func activateSearch() {
         AppState.shared.presentationMode = .workspace
         AppState.shared.isSearchActive = true
+        NotificationCenter.default.post(name: .workspaceSearchKeyboardCaptureEnabled, object: nil)
 
         let visiblePanels = panels.values.filter(\.isVisible)
         let keyPanel = visiblePanels.first ?? panels.values.first
