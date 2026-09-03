@@ -906,6 +906,33 @@ final class WindowLensTests: XCTestCase {
         XCTAssertTrue(model.isWindowlessPlaceholder)
     }
 
+    func testSyntheticWindowlessPlaceholderMapsToNoWindowsModel() {
+        let pid: pid_t = 99_001
+        let info = WindowInfo(
+            windowID: PreviewIdentity.pseudoWindowID(
+                ownerPID: pid,
+                axIndex: 0,
+                title: "No Windows",
+                bounds: .zero
+            ),
+            ownerPID: pid,
+            ownerBundleIdentifier: "com.apple.Safari",
+            axIndex: 0,
+            ownerName: "Safari",
+            windowName: "No Windows",
+            bounds: .zero,
+            isOnScreen: false,
+            isMinimized: false,
+            isHidden: false,
+            isMain: false,
+            spaceID: nil,
+            hasReliableWindowID: false
+        )
+        var model = WindowModel(from: info)
+        model.subtitle = "No Windows"
+        XCTAssertTrue(model.isWindowlessPlaceholder)
+    }
+
     func testMergedWindowsPreservingPreviewsDropsRemovedSurface() {
         let pid: pid_t = 10_002
         let existing = WindowModel(windowID: 1, title: "One", ownerPID: pid)

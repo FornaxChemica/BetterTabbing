@@ -145,18 +145,20 @@ final class WindowSwitcher: @unchecked Sendable {
             return
         }
 
-        // Strategy 1: Try to find by window index (most reliable since we enumerate in AX order)
+        // Strategy 1: Match by CGWindowID when available (stable across AX ordering differences)
+        if window.previewIdentity.hasReliableCGWindowID,
+           window.windowID != 0,
+           let axWindow = AXWindowHelper.getAXWindow(for: window.windowID, pid: app.pid) {
+            print("[WindowSwitcher] Found window by ID \(window.windowID)")
+            raiseAndActivate(axWindow: axWindow, window: window, runningApp: runningApp, app: app, windowIndex: windowIndex)
+            return
+        }
+
+        // Strategy 2: Try to find by window index (fallback when CGWindowID is unavailable)
         if let index = windowIndex, index < axWindows.count {
             let axWindow = axWindows[index]
             print("[WindowSwitcher] Using window index \(index)")
             raiseAndActivate(axWindow: axWindow, window: window, runningApp: runningApp, app: app, windowIndex: index)
-            return
-        }
-
-        // Strategy 2: Try to find the window by CGWindowID
-        if let axWindow = AXWindowHelper.getAXWindow(for: window.windowID, pid: app.pid) {
-            print("[WindowSwitcher] Found window by ID \(window.windowID)")
-            raiseAndActivate(axWindow: axWindow, window: window, runningApp: runningApp, app: app, windowIndex: windowIndex)
             return
         }
 
@@ -194,13 +196,62 @@ final class WindowSwitcher: @unchecked Sendable {
             AXUIElementPerformAction(firstWindow, kAXRaiseAction as CFString)
         }
 
-        let activated = runningApp.activate()
+        let activated = activateWithFallbacks(runningApp: runningApp, focusAXWindow: axWindows.first)
         print("[WindowSwitcher] Activated \(app.name): \(activated)")
 
         if activated {
             WindowCache.shared.moveAppToFront(pid: app.pid, fromOurSwitch: true)
             recordWindowVisit(app: app, window: window, windowIndex: windowIndex)
         }
+    }
+
+    /// Activate a running app, falling back through hide/retry, NSWorkspace.open, and AX focus.
+    private func activateWithFallbacks(
+        runningApp: NSRunningApplication,
+        focusAXWindow axWindow: AXUIElement?
+    ) -> Bool {
+        let axApp = AXUIElementCreateApplication(runningApp.processIdentifier)
+        let currentFrontmost = NSWorkspace.shared.frontmostApplication
+        let currentFrontmostName = currentFrontmost?.localizedName ?? "unknown"
+
+        var success = runningApp.activate()
+
+        if !success {
+            print("[WindowSwitcher] Standard activate failed (from \(currentFrontmostName)), hiding frontmost and retrying")
+            currentFrontmost?.hide()
+            usleep(10000)
+            success = runningApp.activate()
+        }
+
+        if !success, let bundleURL = runningApp.bundleURL {
+            print("[WindowSwitcher] Hide+activate failed, trying NSWorkspace.open()")
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+            config.createsNewApplicationInstance = false
+
+            let semaphore = DispatchSemaphore(value: 0)
+            let openSuccess = BoolBox()
+
+            NSWorkspace.shared.openApplication(at: bundleURL, configuration: config) { app, error in
+                openSuccess.set(error == nil && app != nil)
+                semaphore.signal()
+            }
+
+            _ = semaphore.wait(timeout: .now() + 0.1)
+            success = openSuccess.get()
+        }
+
+        if !success {
+            print("[WindowSwitcher] All methods failed, using AX focus as last resort")
+            let systemWide = AXUIElementCreateSystemWide()
+            AXUIElementSetAttributeValue(systemWide, kAXFocusedApplicationAttribute as CFString, axApp)
+            if let axWindow {
+                AXUIElementSetAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, axWindow)
+            }
+            success = true
+        }
+
+        return success
     }
 
     /// Helper to raise a window and activate the app
@@ -224,8 +275,8 @@ final class WindowSwitcher: @unchecked Sendable {
         let raiseResult = AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString)
         print("[WindowSwitcher] Raised window '\(window.title)': \(raiseResult == .success)")
 
-        // Activate the app
-        let activated = runningApp.activate()
+        // Activate the app (with fallbacks for sticky frontmost apps)
+        let activated = activateWithFallbacks(runningApp: runningApp, focusAXWindow: axWindow)
         print("[WindowSwitcher] Activated \(app.name): \(activated)")
 
         // Update cache order

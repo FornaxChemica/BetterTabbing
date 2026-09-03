@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var nativeFallbackWorkItem: DispatchWorkItem?
     private var nativeWindowSelectionWasAdjusted = false
     private var lastNativePreviewRefreshPID: pid_t?
+    private var lastDockSelectionKey: String?
     private var lastWorkspaceWindowIndexByPID: [pid_t: Int] = [:]
     private var hasStartedWindowCache = false
     private var onboardingWindow: NSWindow?
@@ -776,7 +777,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             AppState.shared.toggleUnusedWindows()
         case .toggleHeatmap:
             guard UserPreferences.load().modules.usageHeatmapEnabled else { return }
-            AppState.shared.toggleHeatmap()
+            panelManager.hide()
+            eventTap?.setSwitcherVisible(false)
+            showHeatmapWindow()
         case .eHoldStarted:
             guard UserPreferences.load().modules.resourceMonitorEnabled else { return }
             AppState.shared.startEHold()
@@ -793,9 +796,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case .nativeSwitchStarted(let reverse):
             startNativeCommandTabSession(reverse: reverse)
         case .nativeSwitchCycleNext:
-            scheduleProvisionalNativeFallback(reverse: false)
+            scheduleProvisionalNativeFallback()
         case .nativeSwitchCyclePrevious:
-            scheduleProvisionalNativeFallback(reverse: true)
+            scheduleProvisionalNativeFallback()
         case .nativeSwitchWindowNext:
             selectNativeWindow(reverse: false)
         case .nativeSwitchWindowPrevious:
@@ -835,7 +838,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func startWorkspaceWindowSession(showImmediately: Bool) {
         var snapshot = hydratingWorkspaceSnapshot(
-            WindowCache.shared.getApplicationsForWorkspaceSwitching(forceRefresh: true)
+            WindowCache.shared.getApplicationsForWorkspaceSwitching(forceRefresh: false)
         )
         let frontmost = frontmostApplicationForWorkspace()
         if let frontmost,
@@ -887,17 +890,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func frontmostApplicationForWorkspace() -> NSRunningApplication? {
-        let currentBundleIdentifier = Bundle.main.bundleIdentifier
         if let frontmost = NSWorkspace.shared.frontmostApplication,
-           frontmost.activationPolicy == .regular,
-           frontmost.bundleIdentifier != currentBundleIdentifier {
+           frontmost.activationPolicy == .regular {
             return frontmost
         }
 
         return NSWorkspace.shared.runningApplications.first {
-            $0.activationPolicy == .regular
-                && $0.isActive
-                && $0.bundleIdentifier != currentBundleIdentifier
+            $0.activationPolicy == .regular && $0.isActive
         }
     }
 
@@ -1072,24 +1071,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func startNativeCommandTabSession(reverse: Bool) {
+        _ = reverse
         isNativeCommandTabSessionActive = true
         nativeWindowSelectionWasAdjusted = false
         lastNativePreviewRefreshPID = nil
+        lastDockSelectionKey = nil
         nativeFallbackWorkItem?.cancel()
         nativeFallbackWorkItem = nil
 
         dockProcessSwitcherObserver.start()
 
-        let applications = WindowCache.shared.getApplicationsForNativePreview()
+        let applications = WindowCache.shared.getApplicationsForNativePreview(forceRefresh: false)
         panelManager.showNativePreview(applications: applications, showImmediately: false)
         prewarmPreviews(for: applications)
         WindowCache.shared.prefetchAsync()
 
-        scheduleProvisionalNativeFallback(reverse: reverse, delay: 0.14)
+        scheduleProvisionalNativeFallback(delay: 0.14)
     }
 
     private func handleDockProcessSwitcherSelection(_ selection: DockProcessSwitcherSelection) {
         guard isNativeCommandTabSessionActive else { return }
+
+        let selectionKey = "\(selection.pid.map(String.init) ?? "nil")|\(selection.bundleIdentifier ?? "")"
+        if selectionKey == lastDockSelectionKey {
+            return
+        }
+        lastDockSelectionKey = selectionKey
 
         nativeFallbackWorkItem?.cancel()
         nativeFallbackWorkItem = nil
@@ -1103,7 +1110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func scheduleProvisionalNativeFallback(reverse: Bool, delay: TimeInterval = 0.14) {
+    private func scheduleProvisionalNativeFallback(delay: TimeInterval = 0.14) {
         guard isNativeCommandTabSessionActive else { return }
 
         nativeFallbackWorkItem?.cancel()
@@ -1115,16 +1122,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     return
                 }
 
-                if reverse {
-                    self.panelManager.selectPrevious()
-                } else {
-                    self.panelManager.selectNext()
-                }
-
+                // Show the preview panel without advancing selection — Dock AX owns highlight.
                 if let selectedApp = AppState.shared.selectedApp {
                     self.requestSelectedNativeAppPreviews(selectedApp)
-                    self.panelManager.showNativeFallbackPreviewPanel()
                 }
+                self.panelManager.showNativeFallbackPreviewPanel()
             }
         }
         nativeFallbackWorkItem = workItem
@@ -1160,8 +1162,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
 
+        let selectedIndex = AppState.shared.selectedWindowIndex
+        let neighborIndices = [selectedIndex - 1, selectedIndex, selectedIndex + 1]
+            .filter { hydratedApp.windows.indices.contains($0) }
+        let windowsNearSelection = neighborIndices.map { hydratedApp.windows[$0] }
+            .filter { !$0.isWindowlessPlaceholder }
+
+        guard !windowsNearSelection.isEmpty else { return }
+
         WindowPreviewService.shared.requestPreviews(
-            for: hydratedApp.windows,
+            for: windowsNearSelection,
             ownerPID: hydratedApp.pid,
             appName: hydratedApp.name,
             selectionGeneration: AppState.shared.currentNativePreviewGeneration
@@ -1169,19 +1179,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func prewarmPreviews(for applications: [ApplicationModel]) {
-        let appsToPrewarm = applications.prefix(8)
-        for app in appsToPrewarm {
-            let windows = Array(app.windows.prefix(3))
-            guard !windows.isEmpty else { continue }
-            WindowPreviewService.shared.requestPreviews(
-                for: windows,
-                ownerPID: app.pid,
-                appName: app.name,
-                selectionGeneration: AppState.shared.currentNativePreviewGeneration
-            )
+        // Hydrate from memory/disk after first paint opportunity; defer SCK capture to selection.
+        DispatchQueue.main.async {
+            guard AppState.shared.presentationMode == .nativePreview else { return }
+            for app in applications.prefix(8) {
+                AppState.shared.hydrateCachedPreviews(for: app.pid)
+            }
         }
-
-        WindowCache.shared.prefetchAsync()
     }
 
     private func reconcileNativeCommandTabRelease() {
@@ -1206,6 +1210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         nativeFallbackWorkItem?.cancel()
         nativeFallbackWorkItem = nil
         nativeWindowSelectionWasAdjusted = false
+        lastDockSelectionKey = nil
         dockProcessSwitcherObserver.stop()
         reconcileNativeCommandTabRelease()
         panelManager.hide()

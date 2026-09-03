@@ -68,6 +68,7 @@ struct SettingsRootView: View {
             } detail: {
                 detailView
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .navigationTitle("Settings")
                     .toolbarTitleDisplayMode(.inline)
                     .scrollContentBackground(.hidden)
             }

@@ -487,8 +487,19 @@ final class KeyboardEventTap {
             && flags.contains(.maskCommand)
     }
 
-    private func observeSystemCommandTabEvent(type: CGEventType, keyCode: UInt16, flags: CGEventFlags) {
+    private func observeSystemCommandTabEvent(
+        type: CGEventType,
+        keyCode: UInt16,
+        flags: CGEventFlags,
+        isRepeat: Bool
+    ) {
         guard type == .keyDown, keyCode == activationKeyCode, flags.contains(.maskCommand) else { return }
+
+        // Autorepeat Tabs still reach Dock (event is passed through), but WindowLens
+        // must not schedule provisional cycles — selection tracks via Dock AX only.
+        if isRepeat {
+            return
+        }
 
         if nativeCommandTabSessionActive {
             if flags.contains(.maskShift) {
@@ -600,7 +611,7 @@ final class KeyboardEventTap {
             if pendingActivation || activeActivationShortcut != nil {
                 resetShortcutState(reason: "clearing stale workspace state before Cmd+Tab pass-through")
             }
-            observeSystemCommandTabEvent(type: type, keyCode: keyCode, flags: flags)
+            observeSystemCommandTabEvent(type: type, keyCode: keyCode, flags: flags, isRepeat: isRepeat)
             return Unmanaged.passUnretained(event)
         }
 

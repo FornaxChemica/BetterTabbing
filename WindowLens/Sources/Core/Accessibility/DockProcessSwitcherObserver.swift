@@ -23,10 +23,12 @@ final class DockProcessSwitcherObserver: NSObject {
 
     private(set) var hasDeliveredSelection = false
     private(set) var selectionVersion: UInt64 = 0
+    private var lastEmittedSelectionKey: String?
 
     func start() {
         stop()
         hasDeliveredSelection = false
+        lastEmittedSelectionKey = nil
 
         guard AXIsProcessTrusted() else {
             print("[DockProcessSwitcherObserver] Accessibility is not trusted")
@@ -74,6 +76,7 @@ final class DockProcessSwitcherObserver: NSObject {
         discoveryTimer = nil
         loggedDiscoveryMiss = false
         hasDeliveredSelection = false
+        lastEmittedSelectionKey = nil
 
         if let observer, let switcherListElement {
             AXObserverRemoveNotification(
@@ -201,6 +204,12 @@ final class DockProcessSwitcherObserver: NSObject {
             from: selectedChild,
             switcherFrame: frame(for: switcherList)
         )
+
+        let selectionKey = "\(selection.pid.map(String.init) ?? "nil")|\(selection.bundleIdentifier ?? "")"
+        if hasDeliveredSelection, selectionKey == lastEmittedSelectionKey {
+            return
+        }
+        lastEmittedSelectionKey = selectionKey
 
         hasDeliveredSelection = true
         selectionVersion &+= 1

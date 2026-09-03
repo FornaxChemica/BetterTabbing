@@ -50,10 +50,8 @@ struct WindowListView: View {
         }
         .frame(height: presentationMode == .nativePreview ? 348 : 372)
         .onAppear {
-            if isCurrentAppWorkspaceCarousel {
-                appState.refreshWorkspaceWindowsForSelectedApp()
-            }
-            requestMissingPreviews()
+            // Defer ScreenCaptureKit until after first paint; only selected ± neighbors.
+            requestMissingPreviews(nearSelectionOnly: true)
         }
         .onChange(of: app.id) { oldValue, newValue in
             requestMissingPreviews()
@@ -814,6 +812,17 @@ private struct AdaptivePreviewGeometry: Equatable {
     }
 }
 
+private enum PreviewGlassSurfaceLayout {
+    /// Trailing nudge in device pixels. Liquid-glass stroke/highlight reads heavier on the
+    /// leading edge, so layout-centered content looks slightly left without this adjustment.
+    private static let opticalCenterOffsetDevicePixels: CGFloat = 16
+
+    static var opticalCenterOffsetX: CGFloat {
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        return opticalCenterOffsetDevicePixels / max(scale, 1.0)
+    }
+}
+
 private struct WindowPreviewPlaceholder: View {
     let isMinimized: Bool
     let geometry: AdaptivePreviewGeometry
@@ -848,7 +857,7 @@ private struct WindowPreviewPlaceholder: View {
                 height: geometry.visualSize.height,
                 alignment: .center
             )
-            .offset(x: 4)
+            .offset(x: PreviewGlassSurfaceLayout.opticalCenterOffsetX)
         }
     }
 }
@@ -897,7 +906,13 @@ private struct WindowlessPreviewSurface: View {
                 }
                 .frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .frame(
+                width: geometry.visualSize.width,
+                height: geometry.visualSize.height,
+                alignment: .center
+            )
+            .offset(x: PreviewGlassSurfaceLayout.opticalCenterOffsetX)
         }
+        .frame(width: geometry.visualSize.width, height: geometry.visualSize.height)
     }
 }

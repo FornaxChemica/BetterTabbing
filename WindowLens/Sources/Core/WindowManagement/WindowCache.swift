@@ -11,6 +11,8 @@ final class WindowCache: @unchecked Sendable {
     private let ttl: TimeInterval = 2.0  // 2 second cache - longer TTL since we refresh on activation
     private let lock = NSLock()
     private let enumerationLock = NSLock()
+    private var cachedPreferences: UserPreferences?
+    private var preferencesLoadedAt: Date?
 
     // Track if a prefetch is in progress to avoid duplicate work
     private var prefetchInProgress = false
@@ -56,7 +58,18 @@ final class WindowCache: @unchecked Sendable {
         return updateCache(with: freshApplications, preservingOrder: existingOrder)
     }
 
-    func getApplicationsForNativePreview() -> [ApplicationModel] {
+    func getApplicationsForNativePreview(forceRefresh: Bool = false) -> [ApplicationModel] {
+        if !forceRefresh {
+            lock.lock()
+            let cacheIsFresh = lastUpdate.map { Date().timeIntervalSince($0) < ttl } ?? false
+            let cachedApplications = cache
+            lock.unlock()
+
+            if cacheIsFresh, !cachedApplications.isEmpty {
+                return cachedApplications.map(WindowEnumerator.normalizeFinderApplicationIfNeeded)
+            }
+        }
+
         let existingOrder = getCachedApplications().map { $0.pid }
         var applications = enumerateApplications(
             options: enumerationOptions(includeAllSpacesOverride: true)
@@ -65,6 +78,34 @@ final class WindowCache: @unchecked Sendable {
         applications = applications.map(WindowEnumerator.normalizeFinderApplicationIfNeeded)
 
         return mergeApplications(applications, preservingOrder: existingOrder)
+    }
+
+    /// Match against a provided snapshot (session apps) without re-enumerating.
+    func applicationMatchingForNativePreview(
+        pid: pid_t?,
+        bundleIdentifier: String?,
+        in applications: [ApplicationModel]
+    ) -> ApplicationModel? {
+        guard let app = applicationMatching(
+            pid: pid,
+            bundleIdentifier: bundleIdentifier,
+            in: applications
+        ) else {
+            return nil
+        }
+
+        return WindowEnumerator.normalizeFinderApplicationIfNeeded(app)
+    }
+
+    func applicationMatchingForNativePreview(
+        pid: pid_t?,
+        bundleIdentifier: String?
+    ) -> ApplicationModel? {
+        applicationMatchingForNativePreview(
+            pid: pid,
+            bundleIdentifier: bundleIdentifier,
+            in: getCachedApplications()
+        )
     }
 
     func getApplicationsForWorkspaceSwitching(forceRefresh: Bool = false) -> [ApplicationModel] {
@@ -111,21 +152,6 @@ final class WindowCache: @unchecked Sendable {
         lastUpdate = Date()
         lock.unlock()
         return mergedApplications
-    }
-
-    func applicationMatchingForNativePreview(
-        pid: pid_t?,
-        bundleIdentifier: String?
-    ) -> ApplicationModel? {
-        guard let app = applicationMatching(
-            pid: pid,
-            bundleIdentifier: bundleIdentifier,
-            in: getApplicationsForNativePreview()
-        ) else {
-            return nil
-        }
-
-        return WindowEnumerator.normalizeFinderApplicationIfNeeded(app)
     }
 
     func applicationMatching(
@@ -336,11 +362,31 @@ final class WindowCache: @unchecked Sendable {
         }
     }
 
+    private func currentPreferences() -> UserPreferences {
+        lock.lock()
+        if let cachedPreferences,
+           let preferencesLoadedAt,
+           Date().timeIntervalSince(preferencesLoadedAt) < ttl {
+            let prefs = cachedPreferences
+            lock.unlock()
+            return prefs
+        }
+        lock.unlock()
+
+        let prefs = UserPreferences.load()
+        lock.lock()
+        cachedPreferences = prefs
+        preferencesLoadedAt = Date()
+        lock.unlock()
+        return prefs
+    }
+
     private func enumerationOptions(includeAllSpacesOverride: Bool? = nil) -> WindowEnumerator.EnumerationOptions {
-        let preferences = UserPreferences.load()
+        let preferences = currentPreferences()
         return WindowEnumerator.EnumerationOptions(
             includeMinimized: preferences.showMinimizedWindows,
-            includeAllSpaces: includeAllSpacesOverride ?? preferences.showAllSpaces
+            includeAllSpaces: includeAllSpacesOverride ?? preferences.showAllSpaces,
+            excludedBundleIDs: Set(preferences.excludedBundleIDs)
         )
     }
 

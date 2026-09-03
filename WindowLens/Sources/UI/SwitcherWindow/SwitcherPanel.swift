@@ -8,7 +8,6 @@ final class SwitcherPanel: NSPanel {
     private var hostingView: NSHostingView<AnyView>?
     private var cancellables = Set<AnyCancellable>()
     private var clickOutsideMonitor: Any?
-    private let entranceDuration: TimeInterval = 0.12
     private let dismissalDuration: TimeInterval = 0.08
     private var presentationMode: SwitcherPresentationMode = .workspace
     private let nativePlacementMargin: CGFloat = 24
@@ -150,14 +149,6 @@ final class SwitcherPanel: NSPanel {
                 self?.recenterIfVisible()
             }
             .store(in: &cancellables)
-
-        AppState.shared.$isHeatmapActive
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.recenterIfVisible()
-            }
-            .store(in: &cancellables)
     }
 
     // MARK: - Size Calculation (matches SwitcherView)
@@ -181,8 +172,6 @@ final class SwitcherPanel: NSPanel {
             let width: CGFloat
             if appState.isUnusedWindowsActive {
                 width = 640
-            } else if appState.isHeatmapActive {
-                width = 920
             } else if appState.isResourceMonitorActive {
                 width = 680
             } else {
@@ -193,8 +182,6 @@ final class SwitcherPanel: NSPanel {
             let height: CGFloat
             if appState.isUnusedWindowsActive {
                 height = 500
-            } else if appState.isHeatmapActive {
-                height = 560
             } else if appState.isResourceMonitorActive {
                 let entryCount = min(appState.resourceEntries.count, 15)
                 let chartHeight: CGFloat = 110
@@ -221,7 +208,6 @@ final class SwitcherPanel: NSPanel {
         let showsPreviewStage = !showSearchResults
             && !appState.isResourceMonitorActive
             && !appState.isUnusedWindowsActive
-            && !appState.isHeatmapActive
 
         // Width calculation
         let width: CGFloat
@@ -229,8 +215,6 @@ final class SwitcherPanel: NSPanel {
             width = 1040
         } else if appState.isUnusedWindowsActive {
             width = 640
-        } else if appState.isHeatmapActive {
-            width = 920
         } else if appState.isResourceMonitorActive {
             width = 680
         } else {
@@ -249,8 +233,6 @@ final class SwitcherPanel: NSPanel {
             contentHeight = max(416, resultsHeight + 80)
         } else if appState.isUnusedWindowsActive {
             contentHeight = 460
-        } else if appState.isHeatmapActive {
-            contentHeight = 520
         } else if appState.isResourceMonitorActive {
             // Resource monitor: bar chart (~100) + header (~20) + entries + hints + padding
             let entryCount = min(appState.resourceEntries.count, 15)
@@ -682,26 +664,15 @@ final class SwitcherPanel: NSPanel {
 
     private func presentWithEntranceAnimation() {
         hostingView?.layer?.removeAnimation(forKey: "switcherScaleOut")
+        hostingView?.layer?.removeAnimation(forKey: "switcherScaleIn")
         hostingView?.layer?.setAffineTransform(.identity)
-        alphaValue = 0
+        // Instant keyboard show — match native Cmd+Tab (no fade/scale).
+        alphaValue = 1
         if presentationMode == .workspace {
             makeKeyAndOrderFront(nil)
             makeFirstResponder(hostingView)
         } else {
             orderFrontRegardless()
-        }
-
-        let scaleAnimation = CABasicAnimation(keyPath: "transform.scale")
-        scaleAnimation.fromValue = 0.985
-        scaleAnimation.toValue = 1.0
-        scaleAnimation.duration = entranceDuration
-        scaleAnimation.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        hostingView?.layer?.add(scaleAnimation, forKey: "switcherScaleIn")
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = entranceDuration
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            animator().alphaValue = 1
         }
     }
 
@@ -844,7 +815,6 @@ final class SwitcherPanel: NSPanel {
         guard AppState.shared.presentationMode == .workspace else { return false }
 
         let isShiftPressed = event.modifierFlags.contains(.shift)
-        let isCommandPressed = event.modifierFlags.contains(.command)
         switch Int(event.keyCode) {
         case kVK_Escape:
             SwitcherPanelManager.shared.hide()

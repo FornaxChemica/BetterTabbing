@@ -165,7 +165,6 @@ final class SwitcherPanelManager {
     }
 
     func showCurrentAppWindowSwitcher() {
-        AppState.shared.refreshWorkspaceWindowsForSelectedApp(forceRefresh: true)
         AppState.shared.startWorkspaceWindowListRefreshTimerIfNeeded()
 
         guard let targetScreen = workspaceSwitcherScreen(),
@@ -309,7 +308,7 @@ final class SwitcherPanelManager {
         }
 
         idlePreviewTrimWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 45.0, execute: workItem)
     }
 
     func reconcileSystemActivation(
@@ -350,9 +349,11 @@ final class SwitcherPanelManager {
 
     @discardableResult
     func selectNativeDockSelection(_ selection: DockProcessSwitcherSelection) -> Bool {
+        // Match against the frozen Cmd+Tab session snapshot — never re-enumerate on highlight.
         let resolvedApplication = WindowCache.shared.applicationMatchingForNativePreview(
             pid: selection.pid,
-            bundleIdentifier: selection.bundleIdentifier
+            bundleIdentifier: selection.bundleIdentifier,
+            in: AppState.shared.applications
         ) ?? AppState.shared.applications.first { app in
             if let pid = selection.pid, app.pid == pid {
                 return true

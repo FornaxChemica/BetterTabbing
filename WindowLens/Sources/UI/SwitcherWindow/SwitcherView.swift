@@ -3,8 +3,6 @@ import Carbon.HIToolbox
 import SwiftUI
 
 struct SwitcherView: View {
-    private static let inlineHeatmapPanelWidth: CGFloat = 920
-
     @EnvironmentObject var appState: AppState
     @FocusState private var isSearchFocused: Bool
 
@@ -71,9 +69,6 @@ struct SwitcherView: View {
                 resourceMonitorInlinePanel
             } else if appState.isUnusedWindowsActive {
                 UnusedWindowsInlineView()
-            } else if appState.isHeatmapActive {
-                HeatmapInlineView()
-                    .environmentObject(appState)
             } else {
                 workspaceAppSwitcherHeader
 
@@ -143,9 +138,6 @@ struct SwitcherView: View {
         }
         if appState.isUnusedWindowsActive {
             return 640
-        }
-        if appState.isHeatmapActive {
-            return Self.inlineHeatmapPanelWidth
         }
 
         let windowCount = appState.selectedApp.map(realWindowCount(for:)) ?? 1
@@ -287,7 +279,7 @@ struct SwitcherView: View {
             commandHint(keys: workspaceCycleKeySymbols(from: shortcuts.workspaceOpen), label: "next app")
             commandHint(keys: ["U"], label: "unused", isActive: appState.isUnusedWindowsActive)
             if modules.usageHeatmapEnabled {
-                commandHint(keys: ["H"], label: "heatmap", isActive: appState.isHeatmapActive)
+                commandHint(keys: ["H"], label: "open heatmap")
             }
             commandHint(keys: ["return"], label: "search")
             commandHint(keys: ["esc"], label: "close")
@@ -404,9 +396,6 @@ struct SwitcherView: View {
             if appState.isUnusedWindowsActive {
                 return 640
             }
-            if appState.isHeatmapActive {
-                return Self.inlineHeatmapPanelWidth
-            }
             return nativePreviewWidth(for: appState.selectedApp?.openWindowCount ?? 1)
         }
 
@@ -420,10 +409,6 @@ struct SwitcherView: View {
 
         if appState.isUnusedWindowsActive {
             return 640
-        }
-
-        if appState.isHeatmapActive {
-            return Self.inlineHeatmapPanelWidth
         }
 
         if appState.isSearchActive && appState.searchQuery.isEmpty {
@@ -691,24 +676,6 @@ private struct UnusedWindowsInlineView: View {
         ) {
             DeadWindowsView(isInline: true)
                 .frame(maxWidth: .infinity, maxHeight: 420)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        }
-    }
-}
-
-private struct HeatmapInlineView: View {
-    var body: some View {
-        NativeLiquidGlassSurface(
-            cornerRadius: 16,
-            tintOpacity: 0.03,
-            strokeOpacity: 0.06,
-            shadowOpacity: 0.08,
-            shadowRadius: 14,
-            shadowYOffset: 6
-        ) {
-            HeatmapView(isInline: true)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .frame(height: 480)
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
     }

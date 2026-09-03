@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct AppUsageSummary: Identifiable, Hashable {
     let id: String
@@ -103,8 +104,6 @@ private extension UserPreferences.HeatmapDefaultTimeRange {
 
 @MainActor
 struct HeatmapView: View {
-    var isInline: Bool = false
-
     @EnvironmentObject var appState: AppState
     @State private var allRecords: [WindowUsageRecord] = []
     @State private var liveLookup: [String: HeatmapLiveWindow] = [:]
@@ -116,6 +115,7 @@ struct HeatmapView: View {
     @State private var iconByAppName: [String: NSImage] = [:]
     @State private var iconByBundleID: [String: NSImage] = [:]
     @State private var actionMessage: String?
+    @State private var actionMessageDismissTask: Task<Void, Never>?
     @State private var runningAppNames: Set<String> = []
     @State private var liveRefreshTask: Task<Void, Never>?
     @State private var liveRefreshEpoch = 0
@@ -141,25 +141,19 @@ struct HeatmapView: View {
     }
 
     var body: some View {
-        Group {
-            if isInline {
-                heatmapRoot
-            } else {
-                NavigationStack {
-                    heatmapRoot
-                        .navigationTitle("Usage Heatmap")
-                        .toolbar {
-                            ToolbarItem(placement: .cancellationAction) {
-                                Button("Close") {
-                                    HeatmapWindowConfigurator.closeWindow()
-                                }
-                                .keyboardShortcut("w", modifiers: .command)
-                            }
+        NavigationStack {
+            heatmapRoot
+                .navigationTitle("Usage Heatmap")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Close") {
+                            HeatmapWindowConfigurator.closeWindow()
                         }
+                        .keyboardShortcut("w", modifiers: .command)
+                    }
                 }
-                .frame(minWidth: 720, minHeight: 520)
-            }
         }
+        .frame(minWidth: 720, minHeight: 520)
         .onAppear {
             applyDefaultTimeRange()
         }
@@ -188,21 +182,15 @@ struct HeatmapView: View {
 
     private var heatmapRoot: some View {
         ZStack(alignment: .bottom) {
-            Group {
-                if isInline {
-                    inlineHeatmapColumns
-                } else {
-                    NavigationSplitView {
-                        appSidebar
-                            .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
-                    } content: {
-                        heatmapColumn
-                            .navigationSplitViewColumnWidth(min: 280, ideal: 360, max: 480)
-                    } detail: {
-                        windowDetailColumn
-                            .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 320)
-                    }
-                }
+            NavigationSplitView {
+                appSidebar
+                    .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
+            } content: {
+                heatmapColumn
+                    .navigationSplitViewColumnWidth(min: 280, ideal: 360, max: 480)
+            } detail: {
+                windowDetailColumn
+                    .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 320)
             }
 
             if let actionMessage {
@@ -212,25 +200,6 @@ struct HeatmapView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-    }
-
-    private var inlineHeatmapColumns: some View {
-        GeometryReader { geometry in
-            let totalWidth = max(geometry.size.width, 1)
-            let sidebarWidth = floor(totalWidth * 0.21)
-            let detailWidth = floor(totalWidth * 0.27)
-            let centerWidth = max(0, totalWidth - sidebarWidth - detailWidth)
-
-            HStack(spacing: 0) {
-                appSidebar
-                    .frame(width: sidebarWidth)
-                heatmapColumn
-                    .frame(width: centerWidth)
-                windowDetailColumn
-                    .frame(width: detailWidth)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func applyDefaultTimeRange() {
@@ -268,6 +237,12 @@ struct HeatmapView: View {
 
     private func applyLiveState(from applications: [ApplicationModel]) {
         liveLookup = Self.buildLiveLookup(from: applications)
+        summaries = Self.buildSummaries(
+            from: allRecords,
+            applications: applications,
+            lookup: liveLookup,
+            now: Date()
+        )
         runningAppNames = Set(applications.map(\.name))
         let icons = Self.buildIconLookup(from: applications)
         iconByAppName = icons.byName
@@ -312,15 +287,13 @@ struct HeatmapView: View {
             }
         }
 
-        if isInline {
-            list.listStyle(.plain)
-        } else {
-            list.listStyle(.sidebar)
-        }
+        list.listStyle(.sidebar)
     }
 
     private func appSidebarRow(summary: AppUsageSummary) -> some View {
-        HStack(spacing: 10) {
+        let hasOpenWindows = openWindowCount(for: summary.appName) > 0
+
+        return HStack(spacing: 10) {
             RoundedRectangle(cornerRadius: 2, style: .continuous)
                 .fill(usageIntensityColor(minutes: summary.totalMinutes))
                 .frame(width: 4)
@@ -335,15 +308,32 @@ struct HeatmapView: View {
                 Text(summary.appName)
                     .font(.system(size: 13, weight: .medium))
                     .lineLimit(1)
-                Text(formatDuration(minutes: summary.totalMinutes))
+                Text(appSidebarSubtitle(for: summary, hasOpenWindows: hasOpenWindows))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
 
             Spacer(minLength: 0)
+
+            if !hasOpenWindows && canQuitApp(summary) {
+                Image(systemName: "circle.fill")
+                    .font(.system(size: 6))
+                    .foregroundStyle(.orange.opacity(0.85))
+                    .help("Running with no open windows")
+            }
         }
         .padding(.vertical, 4)
+    }
+
+    private func appSidebarSubtitle(for summary: AppUsageSummary, hasOpenWindows: Bool) -> String {
+        let duration = formatDuration(minutes: summary.totalMinutes)
+        guard !hasOpenWindows else { return duration }
+        return duration == "0m" ? "No windows" : "No windows · \(duration)"
+    }
+
+    private func openWindowCount(for appName: String) -> Int {
+        windowRows(for: appName).count
     }
 
     private var heatmapColumn: some View {
@@ -372,7 +362,7 @@ struct HeatmapView: View {
                     heatmapGrid(for: summary)
                     heatmapLegend(intensityMinutes: summary.totalMinutes)
                 }
-                .padding(isInline ? 10 : 16)
+                .padding(16)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else {
                 Text("No usage data yet")
@@ -452,10 +442,13 @@ struct HeatmapView: View {
 
                     let windows = windowRows(for: summary.appName)
                     if windows.isEmpty {
-                        Text("No open windows")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        HeatmapNoWindowsPanel(
+                            summary: summary,
+                            appIcon: appIcon(for: summary),
+                            canQuit: canQuitApp(summary),
+                            isPerformingAction: isPerformingWindowAction,
+                            onQuit: { quitApp(summary) }
+                        )
                     } else {
                         List {
                             ForEach(windows) { item in
@@ -521,8 +514,15 @@ struct HeatmapView: View {
         return matches.max(by: { $0.windowTitle.count < $1.windowTitle.count })
     }
 
-    private func presentActionMessage(_ message: String) {
+    private func presentActionMessage(_ message: String, autoDismiss: Bool = true) {
         actionMessage = message
+        actionMessageDismissTask?.cancel()
+        guard autoDismiss else { return }
+        actionMessageDismissTask = Task {
+            try? await Task.sleep(for: .seconds(3.5))
+            guard !Task.isCancelled else { return }
+            actionMessage = nil
+        }
     }
 
     private func minimizeWindow(record: WindowUsageRecord, live: HeatmapLiveWindow) {
@@ -539,6 +539,64 @@ struct HeatmapView: View {
             return
         }
         performWindowAction(record: record, live: live, action: .close)
+    }
+
+    private static let nonQuittableBundleIDs: Set<String> = [
+        "com.apple.finder"
+    ]
+
+    private func canQuitApp(_ summary: AppUsageSummary) -> Bool {
+        guard runningAppNames.contains(summary.appName) else { return false }
+        if summary.id == Bundle.main.bundleIdentifier { return false }
+        if Self.nonQuittableBundleIDs.contains(summary.id) { return false }
+        return resolveRunningApp(for: summary) != nil
+    }
+
+    private func resolveRunningApp(for summary: AppUsageSummary) -> NSRunningApplication? {
+        if summary.id.contains("."),
+           let app = NSRunningApplication.runningApplications(withBundleIdentifier: summary.id).first {
+            return app
+        }
+        return NSWorkspace.shared.runningApplications.first {
+            $0.localizedName == summary.appName && $0.activationPolicy == .regular
+        }
+    }
+
+    private func quitApp(_ summary: AppUsageSummary) {
+        guard canQuitApp(summary) else { return }
+        guard !isPerformingWindowAction else { return }
+
+        guard let runningApp = resolveRunningApp(for: summary) else {
+            presentActionMessage("\(summary.appName) is no longer running.")
+            scheduleLiveRefresh(force: true)
+            return
+        }
+
+        isPerformingWindowAction = true
+        let appName = summary.appName
+        let quittedAppID = summary.id
+
+        Task {
+            let success = await Task.detached(priority: .userInitiated) {
+                if runningApp.terminate() {
+                    return true
+                }
+                return runningApp.forceTerminate()
+            }.value
+
+            WindowCache.shared.invalidate()
+            scheduleLiveRefresh(force: true)
+            isPerformingWindowAction = false
+
+            if success {
+                if selectedAppID == quittedAppID {
+                    selectedAppID = visibleSummaries.first(where: { $0.id != quittedAppID })?.id
+                }
+                presentActionMessage("Quit \(appName)")
+            } else {
+                presentActionMessage("Couldn't quit \(appName)")
+            }
+        }
     }
 
     private enum HeatmapWindowAction {
@@ -568,9 +626,17 @@ struct HeatmapView: View {
             scheduleLiveRefresh(force: true)
             isPerformingWindowAction = false
 
-            if success { return }
-
             let windowLabel = record.lastWindowTitle.isEmpty ? record.lastAppName : record.lastWindowTitle
+            if success {
+                switch action {
+                case .close:
+                    presentActionMessage("Closed \"\(windowLabel)\"")
+                case .minimize:
+                    presentActionMessage("Minimized \"\(windowLabel)\"")
+                }
+                return
+            }
+
             switch action {
             case .minimize:
                 presentActionMessage("Couldn't minimize \"\(windowLabel)\"")
@@ -604,7 +670,7 @@ struct HeatmapView: View {
         let lookup = Self.buildLiveLookup(from: applications)
         allRecords = records
         liveLookup = lookup
-        summaries = Self.buildSummaries(from: records, lookup: lookup, now: Date())
+        summaries = Self.buildSummaries(from: records, applications: applications, lookup: lookup, now: Date())
         runningAppNames = Set(applications.map(\.name))
         let icons = Self.buildIconLookup(from: applications)
         iconByAppName = icons.byName
@@ -630,6 +696,12 @@ struct HeatmapView: View {
         return "surface:\(live.surfaceID)"
     }
 
+    private func isOwnAppName(_ appName: String) -> Bool {
+        liveLookup.values.contains {
+            $0.appName == appName && $0.bundleIdentifier == Bundle.main.bundleIdentifier
+        }
+    }
+
     private func windowRows(for appName: String) -> [WindowRowItem] {
         let records = allRecords
             .filter { $0.lastAppName == appName }
@@ -637,20 +709,66 @@ struct HeatmapView: View {
         let maxCount = max(records.map(\.accessCount).max() ?? 1, 1)
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         var seenLiveKeys = Set<String>()
+        var items: [WindowRowItem] = []
 
-        return records.compactMap { record in
-            guard let live = resolveLive(for: record) else { return nil }
+        for record in records {
+            guard let live = resolveLive(for: record) else { continue }
             let dedupKey = liveWindowDedupKey(live)
-            guard seenLiveKeys.insert(dedupKey).inserted else { return nil }
+            guard seenLiveKeys.insert(dedupKey).inserted else { continue }
             let badge = windowBadge(for: record, live: live, frontmostPID: frontmostPID)
-            return WindowRowItem(
-                id: dedupKey,
-                record: record,
-                live: live,
-                maxAccessCount: maxCount,
-                badge: badge
+            items.append(
+                WindowRowItem(
+                    id: dedupKey,
+                    record: record,
+                    live: live,
+                    maxAccessCount: maxCount,
+                    badge: badge
+                )
             )
         }
+
+        guard isOwnAppName(appName) else { return items }
+
+        let ownLiveWindows = liveLookup.values
+            .filter { $0.appName == appName }
+            .sorted { $0.windowTitle.localizedCaseInsensitiveCompare($1.windowTitle) == .orderedAscending }
+
+        for live in ownLiveWindows {
+            let dedupKey = liveWindowDedupKey(live)
+            guard seenLiveKeys.insert(dedupKey).inserted else { continue }
+            let syntheticRecord = WindowUsageRecord(
+                surfaceID: live.surfaceID,
+                lastAccessedAt: Date(),
+                accessCount: 0,
+                lastAppName: appName,
+                lastWindowTitle: live.windowTitle,
+                firstSeenAt: Date()
+            )
+            items.append(
+                WindowRowItem(
+                    id: dedupKey,
+                    record: syntheticRecord,
+                    live: live,
+                    maxAccessCount: maxCount,
+                    badge: ownAppLiveBadge(for: live, frontmostPID: frontmostPID)
+                )
+            )
+        }
+
+        return items
+    }
+
+    private func ownAppLiveBadge(
+        for live: HeatmapLiveWindow,
+        frontmostPID: pid_t?
+    ) -> HeatmapWindowBadge? {
+        if live.isMinimized {
+            return nil
+        }
+        if let frontmostPID, live.pid == frontmostPID {
+            return .active
+        }
+        return nil
     }
 
     private func windowBadge(
@@ -763,6 +881,55 @@ struct HeatmapView: View {
         calendar.firstWeekday = 2
         let weekday = calendar.component(.weekday, from: date)
         return (weekday + 5) % 7
+    }
+}
+
+private struct HeatmapNoWindowsPanel: View {
+    let summary: AppUsageSummary
+    let appIcon: NSImage
+    let canQuit: Bool
+    let isPerformingAction: Bool
+    let onQuit: () -> Void
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Spacer(minLength: 0)
+
+            Image(nsImage: appIcon)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 44, height: 44)
+
+            VStack(spacing: 6) {
+                Text("No open windows")
+                    .font(.system(size: 14, weight: .medium))
+                Text("\(summary.appName) is still running in the background.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if canQuit {
+                Button(action: onQuit) {
+                    Label("Quit \(summary.appName)", systemImage: "power")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .controlSize(.regular)
+                .disabled(isPerformingAction)
+            } else {
+                Text("This app can't be quit from here.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 }
 
@@ -953,7 +1120,7 @@ private extension HeatmapView {
         if let cached = genericAppIconCache {
             return cached
         }
-        let icon = NSWorkspace.shared.icon(forFileType: "app")
+        let icon = NSWorkspace.shared.icon(for: .application)
         genericAppIconCache = icon
         return icon
     }
@@ -985,12 +1152,14 @@ private extension HeatmapView {
 
     static func buildSummaries(
         from records: [WindowUsageRecord],
+        applications: [ApplicationModel],
         lookup: [String: HeatmapLiveWindow],
         now: Date
     ) -> [AppUsageSummary] {
         let grouped = Dictionary(grouping: records, by: \.lastAppName)
+        var summariesByAppName: [String: AppUsageSummary] = [:]
 
-        return grouped.map { appName, appRecords in
+        for (appName, appRecords) in grouped {
             let bundleFromLookup = lookup.values.first(where: { $0.appName == appName })?.bundleIdentifier
             let bundleFromRunning = NSWorkspace.shared.runningApplications
                 .first(where: { $0.localizedName == appName })?
@@ -1003,7 +1172,7 @@ private extension HeatmapView {
             let lastAccessed = appRecords.map(\.lastAccessedAt).max() ?? .distantPast
             let isStale = now.timeIntervalSince(lastAccessed) > staleThreshold
 
-            return AppUsageSummary(
+            summariesByAppName[appName] = AppUsageSummary(
                 id: id,
                 appName: appName,
                 totalMinutes: totalMinutes,
@@ -1012,7 +1181,23 @@ private extension HeatmapView {
                 isStale: isStale
             )
         }
-        .sorted { $0.totalMinutes > $1.totalMinutes }
+
+        for app in applications {
+            guard summariesByAppName[app.name] == nil else { continue }
+            let openWindows = app.windows.filter { !$0.isWindowlessPlaceholder }
+            guard !openWindows.isEmpty else { continue }
+
+            summariesByAppName[app.name] = AppUsageSummary(
+                id: app.bundleIdentifier.isEmpty ? app.name : app.bundleIdentifier,
+                appName: app.name,
+                totalMinutes: 0,
+                windowCount: openWindows.count,
+                lastAccessed: .distantPast,
+                isStale: true
+            )
+        }
+
+        return summariesByAppName.values.sorted { $0.totalMinutes > $1.totalMinutes }
     }
 }
 

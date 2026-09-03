@@ -12,6 +12,7 @@ final class WindowEnumerator {
         var hydratePreviewImages: Bool = false
         var minimumWidth: CGFloat = 50
         var minimumHeight: CGFloat = 50
+        var excludedBundleIDs: Set<String> = []
 
         static let `default` = EnumerationOptions()
     }
@@ -36,7 +37,7 @@ final class WindowEnumerator {
             return []
         }
 
-        let excludedBundleIDs = Set(UserPreferences.load().excludedBundleIDs)
+        let excludedBundleIDs = options.excludedBundleIDs
         let currentSpaceWindowIDs = Self.currentSpaceWindowIDs()
 
         // Get all running apps with regular activation policy (visible in Dock)
@@ -189,18 +190,24 @@ final class WindowEnumerator {
 
             let icon = app.icon ?? NSImage(named: NSImage.applicationIconName) ?? NSImage()
 
-            // If no windows found through AX, create a synthetic window
-            // This ensures apps like Steam/games still appear in the switcher
+            // If no windows found through AX, create a windowless placeholder so the
+            // switcher shows "No Windows" instead of a blank preview card.
             if windows.isEmpty && axWindows.isEmpty {
+                let windowTitle = "No Windows"
                 let syntheticWindow = WindowInfo(
-                    windowID: CGWindowID(pid),
+                    windowID: PreviewIdentity.pseudoWindowID(
+                        ownerPID: pid,
+                        axIndex: 0,
+                        title: windowTitle,
+                        bounds: .zero
+                    ),
                     ownerPID: pid,
                     ownerBundleIdentifier: bundleIdentifier,
-                    axIndex: nil,
+                    axIndex: 0,
                     ownerName: name,
-                    windowName: name,  // Use app name as window title
+                    windowName: windowTitle,
                     bounds: .zero,
-                    isOnScreen: true,
+                    isOnScreen: false,
                     isMinimized: false,
                     isHidden: false,
                     isMain: false,

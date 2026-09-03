@@ -6,6 +6,11 @@ struct HeatmapSettingsView: View {
     var body: some View {
         Form {
             Section {
+                Text("Usage Heatmap")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
                 Text("Visualize when and how much you use each open app by time of day and day of week.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -33,7 +38,6 @@ struct HeatmapSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .navigationTitle("Usage Heatmap")
     }
 
     private var defaultRangeBinding: Binding<UserPreferences.HeatmapDefaultTimeRange> {

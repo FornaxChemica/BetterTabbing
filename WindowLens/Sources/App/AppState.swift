@@ -49,7 +49,6 @@ final class AppState: ObservableObject {
 
     @Published var isResourceMonitorActive = false
     @Published var isUnusedWindowsActive: Bool = false
-    @Published var isHeatmapActive: Bool = false
     @Published var isProcessGroupingEnabled = true
     @Published var resourceEntries: [ProcessResourceMonitor.ProcessResourceEntry] = []
     @Published var systemMemory: ProcessResourceMonitor.SystemMemory?
@@ -342,11 +341,10 @@ final class AppState: ObservableObject {
             selectedSearchIndex = 0
             isResourceMonitorActive = false
             isUnusedWindowsActive = false
-            isHeatmapActive = false
             stopResourcePolling()
             stopWorkspaceWindowListRefreshTimer()
         } else if workspaceMode == .currentAppWindows {
-            refreshWorkspaceWindowsForSelectedApp()
+            refreshWorkspaceWindowsForSelectedApp(forceRefresh: false)
             startWorkspaceWindowListRefreshTimer()
         }
     }
@@ -368,7 +366,6 @@ final class AppState: ObservableObject {
         selectedSearchIndex = 0
         isResourceMonitorActive = false
         isUnusedWindowsActive = false
-        isHeatmapActive = false
         stopResourcePolling()
 
         if let frontmostPID,
@@ -397,7 +394,7 @@ final class AppState: ObservableObject {
         }
     }
 
-    func refreshWorkspaceWindowsForSelectedApp(forceRefresh: Bool = true) {
+    func refreshWorkspaceWindowsForSelectedApp(forceRefresh: Bool = false) {
         guard presentationMode == .workspace,
               workspaceMode == .currentAppWindows,
               let selectedPID = selectedApp?.pid,
@@ -458,11 +455,19 @@ final class AppState: ObservableObject {
     }
 
     private func requestWorkspacePreviews(for app: ApplicationModel) {
-        let windowsNeedingPreview = app.windows.filter { window in
-            !window.isWindowlessPlaceholder
-                && !WindowEnumerator.shouldSuppressFinderPreview(for: window)
-                && window.previewImage == nil
-                && window.canCapturePreview
+        let selectedIndex = selectedWindowIndex
+        let neighborIndices = [selectedIndex - 1, selectedIndex, selectedIndex + 1]
+            .filter { app.windows.indices.contains($0) }
+
+        let windowsNeedingPreview = neighborIndices.compactMap { index -> WindowModel? in
+            let window = app.windows[index]
+            guard !window.isWindowlessPlaceholder,
+                  !WindowEnumerator.shouldSuppressFinderPreview(for: window),
+                  window.previewImage == nil,
+                  window.canCapturePreview else {
+                return nil
+            }
+            return window
         }
         guard !windowsNeedingPreview.isEmpty else { return }
 
@@ -485,7 +490,7 @@ final class AppState: ObservableObject {
 
     private func startWorkspaceWindowListRefreshTimer() {
         workspaceWindowListRefreshTimer?.cancel()
-        workspaceWindowListRefreshTimer = Timer.publish(every: 0.35, on: .main, in: .common)
+        workspaceWindowListRefreshTimer = Timer.publish(every: 1.0, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
                 guard let self else { return }
@@ -495,7 +500,7 @@ final class AppState: ObservableObject {
                     self.stopWorkspaceWindowListRefreshTimer()
                     return
                 }
-                self.refreshWorkspaceWindowsForSelectedApp()
+                self.refreshWorkspaceWindowsForSelectedApp(forceRefresh: false)
             }
     }
 
@@ -1013,7 +1018,6 @@ final class AppState: ObservableObject {
 
     func toggleResourceMonitor() {
         isUnusedWindowsActive = false
-        isHeatmapActive = false
         isResourceMonitorActive.toggle()
         if isResourceMonitorActive {
             startResourcePolling()
@@ -1023,18 +1027,8 @@ final class AppState: ObservableObject {
     }
 
     func toggleUnusedWindows() {
-        isHeatmapActive = false
         isUnusedWindowsActive.toggle()
         if isUnusedWindowsActive {
-            isResourceMonitorActive = false
-            stopResourcePolling()
-        }
-    }
-
-    func toggleHeatmap() {
-        isUnusedWindowsActive = false
-        isHeatmapActive.toggle()
-        if isHeatmapActive {
             isResourceMonitorActive = false
             stopResourcePolling()
         }
@@ -1336,7 +1330,6 @@ final class AppState: ObservableObject {
         lastMousePosition = nil
         isResourceMonitorActive = false
         isUnusedWindowsActive = false
-        isHeatmapActive = false
     }
 
     private init() {}
