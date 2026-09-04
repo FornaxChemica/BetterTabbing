@@ -281,6 +281,9 @@ struct SwitcherView: View {
             if modules.usageHeatmapEnabled {
                 commandHint(keys: ["H"], label: "open heatmap")
             }
+            if modules.stayAwakeEnabled {
+                StayAwakeChipView()
+            }
             commandHint(keys: ["return"], label: "search")
             commandHint(keys: ["esc"], label: "close")
         }
@@ -765,4 +768,5 @@ extension Notification.Name {
     static let openPermissions = Notification.Name("openPermissions")
     static let openHeatmap = Notification.Name("openHeatmap")
     static let openDeadWindows = Notification.Name("openDeadWindows")
+    static let openStayAwake = Notification.Name("openStayAwake")
 }

@@ -56,6 +56,7 @@ struct KeyboardShortcutBinding: Codable, Equatable, Hashable {
         case kVK_ANSI_E: return "E"
         case kVK_ANSI_Q: return "Q"
         case kVK_ANSI_U: return "U"
+        case kVK_ANSI_A: return "A"
         case kVK_ANSI_W: return "W"
         case kVK_ANSI_1: return "1"
         case kVK_ANSI_2: return "2"
@@ -79,6 +80,7 @@ enum ShortcutAction: String, CaseIterable, Codable {
     case workspaceOpen
     case resourceMonitorToggle
     case usageHeatmapOpen
+    case stayAwakeToggle
 
     var defaultBinding: KeyboardShortcutBinding {
         switch self {
@@ -94,6 +96,8 @@ enum ShortcutAction: String, CaseIterable, Codable {
             return KeyboardShortcutBinding(keyCode: UInt16(kVK_ANSI_E), modifiers: [])
         case .usageHeatmapOpen:
             return KeyboardShortcutBinding(keyCode: UInt16(kVK_ANSI_U), modifiers: [.command, .shift])
+        case .stayAwakeToggle:
+            return KeyboardShortcutBinding(keyCode: UInt16(kVK_ANSI_A), modifiers: [.control, .option])
         }
     }
 
@@ -118,6 +122,52 @@ struct ShortcutPreferences: Codable, Equatable {
     var workspaceOpen: KeyboardShortcutBinding = ShortcutAction.workspaceOpen.defaultBinding
     var resourceMonitorToggle: KeyboardShortcutBinding = ShortcutAction.resourceMonitorToggle.defaultBinding
     var usageHeatmapOpen: KeyboardShortcutBinding = ShortcutAction.usageHeatmapOpen.defaultBinding
+    var stayAwakeToggle: KeyboardShortcutBinding = ShortcutAction.stayAwakeToggle.defaultBinding
+
+    enum CodingKeys: String, CodingKey {
+        case windowHistoryBack
+        case windowHistoryForward
+        case windowSlotModifier
+        case workspaceOpen
+        case resourceMonitorToggle
+        case usageHeatmapOpen
+        case stayAwakeToggle
+    }
+
+    init(
+        windowHistoryBack: KeyboardShortcutBinding = ShortcutAction.windowHistoryBack.defaultBinding,
+        windowHistoryForward: KeyboardShortcutBinding = ShortcutAction.windowHistoryForward.defaultBinding,
+        windowSlotModifier: ModifierKey = .control,
+        workspaceOpen: KeyboardShortcutBinding = ShortcutAction.workspaceOpen.defaultBinding,
+        resourceMonitorToggle: KeyboardShortcutBinding = ShortcutAction.resourceMonitorToggle.defaultBinding,
+        usageHeatmapOpen: KeyboardShortcutBinding = ShortcutAction.usageHeatmapOpen.defaultBinding,
+        stayAwakeToggle: KeyboardShortcutBinding = ShortcutAction.stayAwakeToggle.defaultBinding
+    ) {
+        self.windowHistoryBack = windowHistoryBack
+        self.windowHistoryForward = windowHistoryForward
+        self.windowSlotModifier = windowSlotModifier
+        self.workspaceOpen = workspaceOpen
+        self.resourceMonitorToggle = resourceMonitorToggle
+        self.usageHeatmapOpen = usageHeatmapOpen
+        self.stayAwakeToggle = stayAwakeToggle
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        windowHistoryBack = try container.decodeIfPresent(KeyboardShortcutBinding.self, forKey: .windowHistoryBack)
+            ?? ShortcutAction.windowHistoryBack.defaultBinding
+        windowHistoryForward = try container.decodeIfPresent(KeyboardShortcutBinding.self, forKey: .windowHistoryForward)
+            ?? ShortcutAction.windowHistoryForward.defaultBinding
+        windowSlotModifier = try container.decodeIfPresent(ModifierKey.self, forKey: .windowSlotModifier) ?? .control
+        workspaceOpen = try container.decodeIfPresent(KeyboardShortcutBinding.self, forKey: .workspaceOpen)
+            ?? ShortcutAction.workspaceOpen.defaultBinding
+        resourceMonitorToggle = try container.decodeIfPresent(KeyboardShortcutBinding.self, forKey: .resourceMonitorToggle)
+            ?? ShortcutAction.resourceMonitorToggle.defaultBinding
+        usageHeatmapOpen = try container.decodeIfPresent(KeyboardShortcutBinding.self, forKey: .usageHeatmapOpen)
+            ?? ShortcutAction.usageHeatmapOpen.defaultBinding
+        stayAwakeToggle = try container.decodeIfPresent(KeyboardShortcutBinding.self, forKey: .stayAwakeToggle)
+            ?? ShortcutAction.stayAwakeToggle.defaultBinding
+    }
 
     func binding(for action: ShortcutAction) -> KeyboardShortcutBinding {
         switch action {
@@ -128,6 +178,7 @@ struct ShortcutPreferences: Codable, Equatable {
         case .workspaceOpen: return workspaceOpen
         case .resourceMonitorToggle: return resourceMonitorToggle
         case .usageHeatmapOpen: return usageHeatmapOpen
+        case .stayAwakeToggle: return stayAwakeToggle
         }
     }
 
@@ -147,6 +198,8 @@ struct ShortcutPreferences: Codable, Equatable {
             resourceMonitorToggle = binding
         case .usageHeatmapOpen:
             usageHeatmapOpen = binding
+        case .stayAwakeToggle:
+            stayAwakeToggle = binding
         }
     }
 

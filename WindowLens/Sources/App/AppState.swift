@@ -106,6 +106,9 @@ final class AppState: ObservableObject {
             if oldValue.shortcuts != preferences.shortcuts {
                 NotificationCenter.default.post(name: .shortcutsDidChange, object: nil)
             }
+            if oldValue.modules.stayAwakeEnabled && !preferences.modules.stayAwakeEnabled {
+                KeepAwakeManager.shared.endSession(reason: nil, notify: false)
+            }
             preferences.save()
         }
     }

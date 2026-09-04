@@ -52,6 +52,14 @@ struct FeaturesSettingsView: View {
                 ) {
                     shortcutSettingRow(title: "Open heatmap", action: .usageHeatmapOpen, isEnabled: appState.preferences.modules.usageHeatmapEnabled)
                 }
+
+                moduleSection(
+                    title: "Stay Awake",
+                    footer: "Timers, lid-closed stay awake, and agent-aware sessions. Open Stay Awake from the menu bar for the full panel.",
+                    isEnabled: moduleBinding(\.stayAwakeEnabled)
+                ) {
+                    shortcutSettingRow(title: "Toggle Stay Awake", action: .stayAwakeToggle, isEnabled: appState.preferences.modules.stayAwakeEnabled)
+                }
             }
 
             Section {

@@ -41,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         Task { @MainActor in
             await refreshPermissionGate(context: "launch")
+            KeepAwakeManager.shared.reconcileOnLaunch()
         }
 
         // Panel manager is a lazy singleton - will create panels on first show.
@@ -70,6 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         eventTap?.disable()
         permissionMonitorTimer?.invalidate()
         permissionMonitorTimer = nil
+        KeepAwakeManager.shared.prepareForTerminate()
         print("[WindowLens] App terminating")
     }
 
@@ -191,19 +193,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func showPermissionOnboardingWindow(activate: Bool) {
-        if let window = onboardingWindow {
-            if activate {
-                window.makeKeyAndOrderFront(nil)
-                NSApp.activate(ignoringOtherApps: true)
-            }
-            return
-        }
+        // Always rebuild so auto-dismiss vs manual Done matches the current gate state.
+        closePermissionOnboardingWindow()
 
-        let view = PermissionOnboardingView { [weak self] in
+        // After the required gate is done, keep the window open so optional
+        // privileges (lid-closed stay awake) can be granted without auto-dismiss.
+        let autoDismiss = !hasCompletedPermissionGate
+
+        let view = PermissionOnboardingView(autoDismissWhenReady: autoDismiss) { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 let status = await PermissionManager.shared.checkStatus()
                 guard status.allGranted else {
+                    self.closePermissionOnboardingWindow()
                     self.showPermissionOnboardingWindow(activate: true)
                     return
                 }
@@ -214,8 +216,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         let window = makePermissionGlassWindow(
-            title: "Welcome to WindowLens",
-            styleMask: [.titled, .fullSizeContentView],
+            title: autoDismiss ? "Welcome to WindowLens" : "Permissions",
+            styleMask: [.titled, .closable, .fullSizeContentView],
             rootView: view
         )
         window.center()
@@ -227,7 +229,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         } else {
             window.orderFront(nil)
         }
-        print("[WindowLens] Permission onboarding window shown")
+        print("[WindowLens] Permission onboarding window shown (autoDismiss=\(autoDismiss))")
     }
 
     private func closePermissionOnboardingWindow() {
@@ -531,6 +533,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             .store(in: &cancellables)
 
+        NotificationCenter.default.publisher(for: .openStayAwake)
+            .receive(on: DispatchQueue.main)
+            .sink { _ in
+                // Stay Awake lives in the menu bar panel — nudge the user via activation.
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            .store(in: &cancellables)
+
         NotificationCenter.default.publisher(for: .shortcutsDidChange)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
@@ -819,6 +829,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case .openUsageHeatmap:
             guard UserPreferences.load().modules.usageHeatmapEnabled else { return }
             showHeatmapWindow()
+        case .toggleStayAwake:
+            guard UserPreferences.load().modules.stayAwakeEnabled else { return }
+            KeepAwakeManager.shared.toggleWithDefaultDuration()
         }
     }
 

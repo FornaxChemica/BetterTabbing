@@ -38,6 +38,42 @@ struct UserPreferences: Codable {
         var workspaceSwitcherEnabled: Bool = true
         var resourceMonitorEnabled: Bool = true
         var usageHeatmapEnabled: Bool = true
+        var stayAwakeEnabled: Bool = true
+
+        enum CodingKeys: String, CodingKey {
+            case windowSlotsEnabled
+            case windowHistoryEnabled
+            case workspaceSwitcherEnabled
+            case resourceMonitorEnabled
+            case usageHeatmapEnabled
+            case stayAwakeEnabled
+        }
+
+        init(
+            windowSlotsEnabled: Bool = true,
+            windowHistoryEnabled: Bool = true,
+            workspaceSwitcherEnabled: Bool = true,
+            resourceMonitorEnabled: Bool = true,
+            usageHeatmapEnabled: Bool = true,
+            stayAwakeEnabled: Bool = true
+        ) {
+            self.windowSlotsEnabled = windowSlotsEnabled
+            self.windowHistoryEnabled = windowHistoryEnabled
+            self.workspaceSwitcherEnabled = workspaceSwitcherEnabled
+            self.resourceMonitorEnabled = resourceMonitorEnabled
+            self.usageHeatmapEnabled = usageHeatmapEnabled
+            self.stayAwakeEnabled = stayAwakeEnabled
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            windowSlotsEnabled = try container.decodeIfPresent(Bool.self, forKey: .windowSlotsEnabled) ?? true
+            windowHistoryEnabled = try container.decodeIfPresent(Bool.self, forKey: .windowHistoryEnabled) ?? true
+            workspaceSwitcherEnabled = try container.decodeIfPresent(Bool.self, forKey: .workspaceSwitcherEnabled) ?? true
+            resourceMonitorEnabled = try container.decodeIfPresent(Bool.self, forKey: .resourceMonitorEnabled) ?? true
+            usageHeatmapEnabled = try container.decodeIfPresent(Bool.self, forKey: .usageHeatmapEnabled) ?? true
+            stayAwakeEnabled = try container.decodeIfPresent(Bool.self, forKey: .stayAwakeEnabled) ?? true
+        }
     }
 
     struct HeatmapPreferences: Codable, Equatable {

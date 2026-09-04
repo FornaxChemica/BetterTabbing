@@ -7,6 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AF313ACAFA58581FAE8A2687 /* KeepAwakeDuration.swift in Sources */ = {isa = PBXBuildFile; fileRef = E730416A2A4C58AC80A3C3F5 /* KeepAwakeDuration.swift */; };
+		2E62F018CCD55F9FB4011873 /* PrivilegedPmsetRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A02BF4685955D5CBB6CAFC7 /* PrivilegedPmsetRunner.swift */; };
+		2FE09606E8F751E7A19A7B3A /* PmsetPrivilegeInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEDFBDCEEAFD5117B43A975A /* PmsetPrivilegeInstaller.swift */; };
+		CBAAB3EA0CC95FCC97695DC5 /* KeepAwakeSafetyMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 243BCB38F31C53AEB8564280 /* KeepAwakeSafetyMonitor.swift */; };
+		1DA37202228552758770A874 /* AgentActivityWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21B4D485372F594BBDD82787 /* AgentActivityWatcher.swift */; };
+		30771A439BA359D8916413CF /* KeepAwakeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D310B6E2303D56758A29C52A /* KeepAwakeManager.swift */; };
+		BBBB4C50637B55E49608F66B /* StayAwakeControlsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A301B04810025ECE8A395E35 /* StayAwakeControlsView.swift */; };
+		843BE8CCB161590C964C8E31 /* StayAwakeChipView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8010B4705E6D594C8521253E /* StayAwakeChipView.swift */; };
 		0930A02223CF1F9B042D557B /* WindowSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE4D926371366F489FFD85F1 /* WindowSwitcher.swift */; };
 		0A1B2C3D4E5F60718293A4B /* WindowVisitHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F708192A3B4C /* WindowVisitHistory.swift */; };
 		0B1C2D3E4F5061728394A6B /* WindowUsageStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C2D3E4F5061728394A5B7 /* WindowUsageStore.swift */; };
@@ -65,6 +73,14 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		E730416A2A4C58AC80A3C3F5 /* KeepAwakeDuration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeepAwakeDuration.swift; sourceTree = "<group>"; };
+		5A02BF4685955D5CBB6CAFC7 /* PrivilegedPmsetRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivilegedPmsetRunner.swift; sourceTree = "<group>"; };
+		CEDFBDCEEAFD5117B43A975A /* PmsetPrivilegeInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PmsetPrivilegeInstaller.swift; sourceTree = "<group>"; };
+		243BCB38F31C53AEB8564280 /* KeepAwakeSafetyMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeepAwakeSafetyMonitor.swift; sourceTree = "<group>"; };
+		21B4D485372F594BBDD82787 /* AgentActivityWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentActivityWatcher.swift; sourceTree = "<group>"; };
+		D310B6E2303D56758A29C52A /* KeepAwakeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeepAwakeManager.swift; sourceTree = "<group>"; };
+		A301B04810025ECE8A395E35 /* StayAwakeControlsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StayAwakeControlsView.swift; sourceTree = "<group>"; };
+		8010B4705E6D594C8521253E /* StayAwakeChipView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StayAwakeChipView.swift; sourceTree = "<group>"; };
 		08B313704DC040E4FAEFE403 /* ResourceMonitorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourceMonitorView.swift; sourceTree = "<group>"; };
 		0B1D454865BA86143195A78A /* WindowLens.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = WindowLens.entitlements; sourceTree = "<group>"; };
 		1016019BF84431C6A6F38F3C /* SwitcherView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwitcherView.swift; sourceTree = "<group>"; };
@@ -172,9 +188,23 @@
 			path = Services;
 			sourceTree = "<group>";
 		};
+		0F50698043D65D9FA7B6B9C6 /* Power */ = {
+			isa = PBXGroup;
+			children = (
+				E730416A2A4C58AC80A3C3F5 /* KeepAwakeDuration.swift */,
+				5A02BF4685955D5CBB6CAFC7 /* PrivilegedPmsetRunner.swift */,
+				CEDFBDCEEAFD5117B43A975A /* PmsetPrivilegeInstaller.swift */,
+				243BCB38F31C53AEB8564280 /* KeepAwakeSafetyMonitor.swift */,
+				21B4D485372F594BBDD82787 /* AgentActivityWatcher.swift */,
+				D310B6E2303D56758A29C52A /* KeepAwakeManager.swift */,
+			);
+			path = Power;
+			sourceTree = "<group>";
+		};
 		2B45388D5ABA3EE895A729C9 /* Core */ = {
 			isa = PBXGroup;
 			children = (
+				0F50698043D65D9FA7B6B9C6 /* Power */,
 				65D4F88D79A850EE24840A68 /* Accessibility */,
 				81773DC40C945669DB298E21 /* EventTap */,
 				CF7A164689F471E715BEFBB4 /* LLM */,
@@ -310,6 +340,8 @@
 		AD48EA824FAC29BECA796547 /* Components */ = {
 			isa = PBXGroup;
 			children = (
+				A301B04810025ECE8A395E35 /* StayAwakeControlsView.swift */,
+				8010B4705E6D594C8521253E /* StayAwakeChipView.swift */,
 				7A8BD25C09D59564BBE63E8D /* AppTileView.swift */,
 				B4E08258B64673399D814024 /* CircularProgressRing.swift */,
 				3F30A3155D9DB846F43F2B34 /* GlassBackground.swift */,
@@ -476,6 +508,14 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AF313ACAFA58581FAE8A2687 /* KeepAwakeDuration.swift in Sources */,
+				2E62F018CCD55F9FB4011873 /* PrivilegedPmsetRunner.swift in Sources */,
+				2FE09606E8F751E7A19A7B3A /* PmsetPrivilegeInstaller.swift in Sources */,
+				CBAAB3EA0CC95FCC97695DC5 /* KeepAwakeSafetyMonitor.swift in Sources */,
+				1DA37202228552758770A874 /* AgentActivityWatcher.swift in Sources */,
+				30771A439BA359D8916413CF /* KeepAwakeManager.swift in Sources */,
+				BBBB4C50637B55E49608F66B /* StayAwakeControlsView.swift in Sources */,
+				843BE8CCB161590C964C8E31 /* StayAwakeChipView.swift in Sources */,
 				9EC4D1A473C5AF596C3DA409 /* AppDelegate.swift in Sources */,
 				FCBE066DB7D0E9CD8C45D201 /* AppState.swift in Sources */,
 				774E5EC3EB80A43B0E8FABB2 /* WindowLensApp.swift in Sources */,

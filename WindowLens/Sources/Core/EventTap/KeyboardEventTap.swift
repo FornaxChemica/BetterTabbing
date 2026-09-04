@@ -43,6 +43,7 @@ enum ShortcutEvent {
     case windowHistoryRedo
     case activateWindowSlot(Int)
     case openUsageHeatmap
+    case toggleStayAwake
 }
 
 private final class KeyboardEventTapHealthTarget: NSObject {
@@ -722,6 +723,13 @@ final class KeyboardEventTap {
            UserPreferences.load().modules.usageHeatmapEnabled,
            cachedShortcuts.usageHeatmapOpen.matches(keyCode: keyCode, flags: flags) {
             onShortcutTriggered.send(.openUsageHeatmap)
+            return nil
+        }
+
+        if !switcherVisible && !pendingActivation && !nativeCommandTabSessionActive && !isRepeat,
+           UserPreferences.load().modules.stayAwakeEnabled,
+           cachedShortcuts.stayAwakeToggle.matches(keyCode: keyCode, flags: flags) {
+            onShortcutTriggered.send(.toggleStayAwake)
             return nil
         }
 

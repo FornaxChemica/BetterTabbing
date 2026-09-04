@@ -20,6 +20,7 @@ final class PermissionOnboardingViewModel: ObservableObject {
     }
 
     @Published private(set) var items: [PermissionItem]
+    @Published private(set) var bagModePrivilegeState: PermissionRowState = .idle
 
     private let manager: PermissionManager
     private var pollingTask: Task<Void, Never>?
@@ -71,6 +72,20 @@ final class PermissionOnboardingViewModel: ObservableObject {
         }
     }
 
+    func grantBagModePrivilege() {
+        bagModePrivilegeState = .waiting
+        Task.detached(priority: .userInitiated) {
+            let ok = PmsetPrivilegeInstaller.install()
+            await MainActor.run {
+                PmsetPrivilegeInstaller.invalidateCache()
+                self.bagModePrivilegeState = ok ? .granted : .idle
+                if ok {
+                    KeepAwakeManager.shared.setLidClosedStayAwakeEnabled(true)
+                }
+            }
+        }
+    }
+
     func refreshNow() async {
         await refresh()
     }
@@ -88,6 +103,15 @@ final class PermissionOnboardingViewModel: ObservableObject {
     private func refresh() async {
         let status = await manager.checkStatus()
         apply(status: status)
+        refreshBagModePrivilege()
+    }
+
+    private func refreshBagModePrivilege() {
+        if PmsetPrivilegeInstaller.isInstalled {
+            bagModePrivilegeState = .granted
+        } else if bagModePrivilegeState != .waiting {
+            bagModePrivilegeState = .idle
+        }
     }
 
     private func apply(status: PermissionManager.Status) {

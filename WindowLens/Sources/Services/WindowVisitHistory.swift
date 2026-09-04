@@ -258,12 +258,27 @@ final class WindowVisitHistory: ObservableObject {
         return outcome
     }
 
-    func recentVisitsForMenu(limit: Int = 10) -> [WindowVisit] {
-        var entries = past
+    /// MRU list of distinct windows for the menu bar — not a raw visit stack.
+    /// Switching between A and B should show each once, most recent first.
+    func recentVisitsForMenu(limit: Int = 8) -> [WindowVisit] {
+        var newestFirst: [WindowVisit] = []
         if let current {
-            entries.append(current)
+            newestFirst.append(current)
         }
-        return Array(entries.suffix(limit).reversed())
+        newestFirst.append(contentsOf: past.reversed())
+
+        var seen = Set<String>()
+        var unique: [WindowVisit] = []
+
+        for visit in newestFirst {
+            let key = visit.previewIdentity.surfaceID
+            guard seen.insert(key).inserted else { continue }
+            guard resolve(visit) != nil else { continue }
+            unique.append(visit)
+            if unique.count >= limit { break }
+        }
+
+        return unique
     }
 
     func resolve(_ visit: WindowVisit) -> (app: ApplicationModel, window: WindowModel, windowIndex: Int)? {
