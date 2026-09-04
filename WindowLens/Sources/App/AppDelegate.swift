@@ -49,7 +49,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        showSettingsWindow()
+        // MenuBarExtra / status-item windows can make hasVisibleWindows true even when
+        // Settings is closed — still restore the primary UI on Dock / Cmd-Tab reopen.
+        reopenPrimaryWindowIfNeeded(reason: "application reopen")
         return true
     }
 
@@ -87,6 +89,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
         guard onboardingWindow == nil, permissionReadyWindow == nil else { return }
+
+        // Defer so a MenuBarExtra click can become key first; otherwise Cmd-Tab back
+        // after closing Settings would leave the app active with no window.
+        DispatchQueue.main.async { [weak self] in
+            self?.reopenPrimaryWindowIfNeeded(reason: "application active")
+        }
     }
 
     func applicationWillResignActive(_ notification: Notification) {
@@ -616,6 +624,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         windowSlotObserverTokens = [terminateToken, launchToken]
         print("[WindowLens] Window slot observers installed")
+    }
+
+    /// Restores Settings (or brings an existing primary window forward) when the app
+    /// is activated with no real UI — e.g. after closing Settings and Cmd-Tabbing back.
+    private func reopenPrimaryWindowIfNeeded(reason: String) {
+        guard hasCompletedPermissionGate else { return }
+        guard onboardingWindow == nil, permissionReadyWindow == nil else { return }
+        guard !AppState.shared.isVisible else { return }
+
+        if hasVisiblePrimaryWindow {
+            bringPrimaryWindowsForward()
+            return
+        }
+
+        // User opened the menu-bar panel — don't also shove Settings in front.
+        if isMenuBarExtraPanelVisible {
+            return
+        }
+
+        print("[WindowLens] Reopening Settings (\(reason))")
+        showSettingsWindow()
+    }
+
+    private var hasVisiblePrimaryWindow: Bool {
+        let identifiers: Set<NSUserInterfaceItemIdentifier> = [
+            SettingsWindowConfigurator.windowIdentifier,
+            HeatmapWindowConfigurator.windowIdentifier,
+            DeadWindowsWindowConfigurator.windowIdentifier
+        ]
+
+        if let settingsWindow, settingsWindow.isVisible { return true }
+        if let heatmapWindow, heatmapWindow.isVisible { return true }
+        if let deadWindowsWindow, deadWindowsWindow.isVisible { return true }
+        if let onboardingWindow, onboardingWindow.isVisible { return true }
+        if let permissionReadyWindow, permissionReadyWindow.isVisible { return true }
+
+        return NSApp.windows.contains { window in
+            guard window.isVisible, !window.isMiniaturized else { return false }
+            if let id = window.identifier, identifiers.contains(id) { return true }
+            return window.styleMask.contains(.titled)
+                && window.level == .normal
+                && !window.styleMask.contains(.nonactivatingPanel)
+        }
+    }
+
+    private var isMenuBarExtraPanelVisible: Bool {
+        NSApp.windows.contains { window in
+            guard window.isVisible else { return false }
+            let typeName = String(describing: type(of: window))
+            if typeName.contains("MenuBarExtra") { return true }
+            // SwiftUI MenuBarExtra(.window) hosts a borderless panel above normal level.
+            if !window.styleMask.contains(.titled),
+               window.level.rawValue >= NSWindow.Level.popUpMenu.rawValue {
+                return true
+            }
+            return false
+        }
+    }
+
+    private func bringPrimaryWindowsForward() {
+        let candidates = [settingsWindow, heatmapWindow, deadWindowsWindow].compactMap { $0 }
+        for window in candidates where window.isVisible {
+            window.makeKeyAndOrderFront(nil)
+        }
+        if candidates.contains(where: \.isVisible) {
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 
     private func showSettingsWindow() {
