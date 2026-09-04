@@ -29,11 +29,17 @@ is_runnable_app() {
 find_derived_app_named() {
     local app_name="$1"
     local candidate=""
+    local newest=""
+    local newest_mtime=0
+    local mtime=0
 
     while IFS= read -r candidate; do
         if is_runnable_app "$candidate"; then
-            printf '%s\n' "$candidate"
-            return 0
+            mtime=$(stat -f '%m' "$candidate/Contents/MacOS" 2>/dev/null || echo 0)
+            if [ "$mtime" -ge "$newest_mtime" ]; then
+                newest_mtime="$mtime"
+                newest="$candidate"
+            fi
         fi
     done < <(
         find "$DERIVED_DATA_DIR" \
@@ -42,6 +48,11 @@ find_derived_app_named() {
             -type d \
             -print 2>/dev/null
     )
+
+    if [ -n "$newest" ]; then
+        printf '%s\n' "$newest"
+        return 0
+    fi
 
     return 1
 }

@@ -29,6 +29,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var lastPermissionAllGranted: Bool?
     private var lastLoggedPermissionStatusDescription: String?
     private let dockProcessSwitcherObserver = DockProcessSwitcherObserver()
+    /// Cooldown so activate → showSettings → activate doesn't loop.
+    private var lastPrimaryWindowPresentAt: Date?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -49,9 +51,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        // MenuBarExtra / status-item windows can make hasVisibleWindows true even when
-        // Settings is closed — still restore the primary UI on Dock / Cmd-Tab reopen.
-        reopenPrimaryWindowIfNeeded(reason: "application reopen")
+        // Dock click. MenuBarExtra keeps hasVisibleWindows unreliable — always restore Settings.
+        presentPrimaryWindowIfNeeded(reason: "reopen hasVisibleWindows=\(hasVisibleWindows)")
         return true
     }
 
@@ -82,19 +83,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Task { @MainActor in
             await refreshPermissionGate(context: "application active")
         }
+        presentPrimaryWindowIfNeeded(reason: "applicationDidBecomeActive")
+    }
 
-        guard hasCompletedPermissionGate else { return }
-        guard !suppressSettingsOnNextActivation else {
-            suppressSettingsOnNextActivation = false
-            return
-        }
-        guard onboardingWindow == nil, permissionReadyWindow == nil else { return }
-
-        // Defer so a MenuBarExtra click can become key first; otherwise Cmd-Tab back
-        // after closing Settings would leave the app active with no window.
-        DispatchQueue.main.async { [weak self] in
-            self?.reopenPrimaryWindowIfNeeded(reason: "application active")
-        }
+    func applicationDidUnhide(_ notification: Notification) {
+        presentPrimaryWindowIfNeeded(reason: "applicationDidUnhide")
     }
 
     func applicationWillResignActive(_ notification: Notification) {
@@ -333,12 +326,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             onboardingWindow = nil
         } else if window === permissionReadyWindow {
             permissionReadyWindow = nil
-        } else if window === settingsWindow {
-            settingsWindow = nil
         } else if window === heatmapWindow {
             heatmapWindow = nil
         } else if window === deadWindowsWindow {
             deadWindowsWindow = nil
+        }
+
+        let closedPrimary =
+            window === settingsWindow
+            || window === heatmapWindow
+            || window === deadWindowsWindow
+            || window.identifier == SettingsWindowConfigurator.windowIdentifier
+            || window.identifier == HeatmapWindowConfigurator.windowIdentifier
+            || window.identifier == DeadWindowsWindowConfigurator.windowIdentifier
+
+        // MenuBarExtra apps can stay "frontmost" with no key window after Settings is
+        // closed, so Cmd-Tab back does nothing. Hide so the next Dock/Cmd-Tab is a
+        // real activation that restores Settings.
+        if closedPrimary {
+            DispatchQueue.main.async { [weak self] in
+                self?.yieldFrontmostIfNoPrimaryWindow()
+            }
         }
     }
 
@@ -587,7 +595,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
 
-        workspaceObserverTokens = [sessionToken, wakeToken]
+        // Cmd-Tab often leaves MenuBarExtra apps "frontmost" without NSApp.isActive /
+        // applicationDidBecomeActive. Workspace activation is the reliable signal.
+        let activateToken = workspaceNotificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.bundleIdentifier == Bundle.main.bundleIdentifier else {
+                return
+            }
+            Task { @MainActor [weak self] in
+                self?.presentPrimaryWindowIfNeeded(reason: "workspace didActivateApplication")
+            }
+        }
+
+        workspaceObserverTokens = [sessionToken, wakeToken, activateToken]
         print("[WindowLens] Workspace recovery observers installed")
     }
 
@@ -626,27 +650,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         print("[WindowLens] Window slot observers installed")
     }
 
-    /// Restores Settings (or brings an existing primary window forward) when the app
-    /// is activated with no real UI — e.g. after closing Settings and Cmd-Tabbing back.
-    private func reopenPrimaryWindowIfNeeded(reason: String) {
-        guard hasCompletedPermissionGate else { return }
-        guard onboardingWindow == nil, permissionReadyWindow == nil else { return }
-        guard !AppState.shared.isVisible else { return }
-
-        if hasVisiblePrimaryWindow {
-            bringPrimaryWindowsForward()
-            return
-        }
-
-        // User opened the menu-bar panel — don't also shove Settings in front.
-        if isMenuBarExtraPanelVisible {
-            return
-        }
-
-        print("[WindowLens] Reopening Settings (\(reason))")
-        showSettingsWindow()
-    }
-
+    /// True when Settings / Heatmap / Unused Windows / onboarding is actually on-screen.
+    /// Ignores MenuBarExtra and switcher panels — those are not primary app windows.
     private var hasVisiblePrimaryWindow: Bool {
         let identifiers: Set<NSUserInterfaceItemIdentifier> = [
             SettingsWindowConfigurator.windowIdentifier,
@@ -654,60 +659,87 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             DeadWindowsWindowConfigurator.windowIdentifier
         ]
 
-        if let settingsWindow, settingsWindow.isVisible { return true }
-        if let heatmapWindow, heatmapWindow.isVisible { return true }
-        if let deadWindowsWindow, deadWindowsWindow.isVisible { return true }
+        if let settingsWindow, settingsWindow.isVisible, !settingsWindow.isMiniaturized { return true }
+        if let heatmapWindow, heatmapWindow.isVisible, !heatmapWindow.isMiniaturized { return true }
+        if let deadWindowsWindow, deadWindowsWindow.isVisible, !deadWindowsWindow.isMiniaturized { return true }
         if let onboardingWindow, onboardingWindow.isVisible { return true }
         if let permissionReadyWindow, permissionReadyWindow.isVisible { return true }
 
         return NSApp.windows.contains { window in
             guard window.isVisible, !window.isMiniaturized else { return false }
-            if let id = window.identifier, identifiers.contains(id) { return true }
-            return window.styleMask.contains(.titled)
-                && window.level == .normal
-                && !window.styleMask.contains(.nonactivatingPanel)
+            guard let id = window.identifier else { return false }
+            return identifiers.contains(id)
         }
     }
 
-    private var isMenuBarExtraPanelVisible: Bool {
-        NSApp.windows.contains { window in
-            guard window.isVisible else { return false }
-            let typeName = String(describing: type(of: window))
-            if typeName.contains("MenuBarExtra") { return true }
-            // SwiftUI MenuBarExtra(.window) hosts a borderless panel above normal level.
-            if !window.styleMask.contains(.titled),
-               window.level.rawValue >= NSWindow.Level.popUpMenu.rawValue {
-                return true
+    /// Restore Settings when the app is brought forward with no primary UI.
+    private func presentPrimaryWindowIfNeeded(reason: String) {
+        guard hasCompletedPermissionGate else { return }
+        if onboardingWindow?.isVisible == true || permissionReadyWindow?.isVisible == true { return }
+        guard !AppState.shared.isVisible else { return }
+
+        if hasVisiblePrimaryWindow {
+            if let settingsWindow, settingsWindow.isVisible {
+                settingsWindow.makeKeyAndOrderFront(nil)
             }
-            return false
+            return
         }
+
+        if suppressSettingsOnNextActivation {
+            suppressSettingsOnNextActivation = false
+            return
+        }
+
+        if let last = lastPrimaryWindowPresentAt, Date().timeIntervalSince(last) < 0.35 {
+            return
+        }
+        lastPrimaryWindowPresentAt = Date()
+
+        print("[WindowLens] Presenting Settings (\(reason)) active=\(NSApp.isActive) hidden=\(NSApp.isHidden)")
+        showSettingsWindow()
     }
 
-    private func bringPrimaryWindowsForward() {
-        let candidates = [settingsWindow, heatmapWindow, deadWindowsWindow].compactMap { $0 }
-        for window in candidates where window.isVisible {
-            window.makeKeyAndOrderFront(nil)
-        }
-        if candidates.contains(where: \.isVisible) {
-            NSApp.activate(ignoringOtherApps: true)
+    /// After the last primary window closes, yield frontmost so Cmd-Tab/Dock can
+    /// re-activate us. Without this, MenuBarExtra leaves a zombie frontmost+inactive state.
+    private func yieldFrontmostIfNoPrimaryWindow() {
+        guard !hasVisiblePrimaryWindow else { return }
+        guard onboardingWindow?.isVisible != true else { return }
+        guard permissionReadyWindow?.isVisible != true else { return }
+
+        // Closing the last key window often leaves us frontmost but inactive — Cmd-Tab
+        // then no-ops. Drop frontmost ownership so the next Dock click / Cmd-Tab is real.
+        print("[WindowLens] No primary window — yielding frontmost so next activation restores Settings")
+        NSApp.hide(nil)
+        NSApp.deactivate()
+
+        // MenuBarExtra can ignore hide; bounce policy to release frontmost.
+        if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == Bundle.main.bundleIdentifier {
+            NSApp.setActivationPolicy(.accessory)
+            DispatchQueue.main.async {
+                NSApp.setActivationPolicy(.regular)
+            }
         }
     }
 
     private func showSettingsWindow() {
-        closeDuplicateSettingsWindows(keeping: settingsWindow)
-
-        if settingsWindow == nil {
-            settingsWindow = findExistingSettingsWindow()
-        }
-
-        if let window = settingsWindow {
+        // Reuse only if currently visible; closed windows often fail to come back
+        // reliably with makeKeyAndOrderFront alone.
+        if let window = settingsWindow, window.isVisible {
             window.makeKeyAndOrderFront(nil)
-            DispatchQueue.main.async {
-                SettingsWindowConfigurator.applyPostLayoutChrome(to: window)
-            }
             suppressSettingsOnNextActivation = true
+            NSApp.unhide(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
+        }
+
+        if let stale = settingsWindow {
+            stale.delegate = nil
+            stale.orderOut(nil)
+            settingsWindow = nil
+        }
+        for window in NSApp.windows where window.identifier == SettingsWindowConfigurator.windowIdentifier {
+            window.delegate = nil
+            window.orderOut(nil)
         }
 
         let rootView = SettingsRootView()
@@ -722,7 +754,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         settingsWindow = window
         suppressSettingsOnNextActivation = true
+        NSApp.unhide(nil)
         window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
         DispatchQueue.main.async {
             SettingsWindowConfigurator.applyPostLayoutChrome(to: window)
         }
