@@ -257,8 +257,10 @@ struct StayAwakeControlsView: View {
 
                 StayAwakePillToggle(isOn: isOn)
             }
+            .padding(.horizontal, 8)
             .padding(.vertical, 10)
             .contentShape(Rectangle())
+            .menuBarHoverBackground()
         }
         .buttonStyle(.plain)
         .disabled(disabled)

@@ -87,20 +87,22 @@ struct MenuBarView: View {
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundStyle(.secondary)
         }
+        .padding(.horizontal, 2)
     }
 
     @ViewBuilder
     private var recentWindowsSection: some View {
         let recentVisits = visitHistory.recentVisitsForMenu(limit: 5)
         if !recentVisits.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text("Recent")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .textCase(.uppercase)
+                    .padding(.horizontal, 8)
 
                 ForEach(recentVisits) { visit in
-                    Button {
+                    MenuBarHoverButton {
                         visitHistory.jumpToVisit(visit)
                         dismiss()
                     } label: {
@@ -117,14 +119,7 @@ struct MenuBarView: View {
                                 .foregroundStyle(.primary)
                             Spacer(minLength: 0)
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 6)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(Color.primary.opacity(0.04))
-                        )
                     }
-                    .buttonStyle(.plain)
                 }
             }
         }
@@ -151,7 +146,7 @@ struct MenuBarView: View {
     }
 
     private func footerButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        MenuBarHoverButton(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: systemImage)
                     .font(.system(size: 11, weight: .medium))
@@ -159,13 +154,10 @@ struct MenuBarView: View {
                     .frame(width: 16)
                 Text(title)
                     .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.primary)
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
     }
 
     private static func appIcon(for visit: WindowVisit) -> NSImage? {
